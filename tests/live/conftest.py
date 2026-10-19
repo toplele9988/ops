@@ -10,6 +10,7 @@ _shared = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_shared)
 
 snapshot_db = _shared.snapshot_db
+catalog_copy = _shared.catalog_copy
 work_db = _shared.work_db
 settings = _shared.settings
 app = _shared.app

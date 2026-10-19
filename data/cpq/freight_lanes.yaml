@@ -1,0 +1,39 @@
+# 上线前必须填入真实货代报价
+# 费用和税率中的 0 为占位值，待业主核实填写。
+- lane_id: SEA-DEHAM
+  mode: sea
+  dest_country: DE
+  named_place: "Hamburg, Germany"
+  valid_until: 2026-11-30
+  currency: USD
+  inland_cny_per_cbm: 0
+  inland_min_cny: 0
+  origin_fixed_usd: 0
+  origin_per_cbm_usd: 0
+  lcl_rate_usd_per_wm: 0
+  lcl_min_wm: 1.0
+  fcl_rate_usd: { 20GP: 0, 40GP: 0, 40HQ: 0 }
+  fcl_origin_fixed_usd_per_container: 0
+  fcl_dest_fixed_usd_per_container: 0
+  dest_fixed_usd: 0
+  dest_per_cbm_usd: 0
+  last_mile_usd: 0
+  duty_rate: 0.0
+  duty_basis: CIF
+  import_vat_rate: 0.0
+  include_import_vat: true
+- lane_id: EXP-DHL-DE
+  mode: express
+  dest_country: DE
+  named_place: "Door, Germany"
+  valid_until: 2026-11-30
+  volumetric_divisor: 5000
+  increment_kg: 0.5
+  bands: [ { upto_kg: 21, usd_per_kg: 0 }, { upto_kg: 45, usd_per_kg: 0 }, { upto_kg: 100, usd_per_kg: 0 }, { upto_kg: 99999, usd_per_kg: 0 } ]
+  min_charge_usd: 0
+  fuel_surcharge_pct: 0.0
+  ddp_fee_usd: 0
+  duty_rate: 0.0
+  duty_basis: CIF
+  import_vat_rate: 0.0
+  include_import_vat: true

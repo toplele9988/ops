@@ -1,0 +1,4 @@
+# cost_cny 的 0 是占位值；真实配件成本待业主填写，上线前必须核实。
+- { accessory_id: HOOK-QR, name_en: Quick-release clamp, name_zh: 快装灯钩, cost_cny: 0, active: true }
+- { accessory_id: SAFETY-CABLE, name_en: Safety cable, name_zh: 保险绳, cost_cny: 0, active: true }
+- { accessory_id: LINK-CABLE, name_en: Link cable, name_zh: 手拉手线材, cost_cny: 0, active: true }
