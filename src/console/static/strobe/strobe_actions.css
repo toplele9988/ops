@@ -1,0 +1,244 @@
+/* Loaded by the actions module. */
+#cpq-quote-panel {
+  --sg-bg: var(--tblr-bg-surface, Canvas);
+  --sg-soft: var(--tblr-bg-surface-secondary, Canvas);
+  --sg-text: var(--tblr-body-color, CanvasText);
+  --sg-muted: var(--tblr-secondary, GrayText);
+  --sg-border: var(--tblr-border-color, GrayText);
+  --sg-primary: var(--tblr-primary, Highlight);
+  --sg-ok: var(--tblr-success, #2fb344);
+  --sg-fuse: var(--tblr-danger, #d63939);
+  min-width: 0;
+  margin: 0 0 .8rem;
+  padding: .85rem;
+  border: 1px solid var(--sg-border);
+  border-radius: .6rem;
+  background: var(--sg-bg);
+  color: var(--sg-text);
+  overflow-wrap: anywhere;
+}
+
+#cpq-quote-panel,
+#cpq-quote-panel *,
+#cpq-quote-panel *::before,
+#cpq-quote-panel *::after {
+  box-sizing: border-box;
+}
+
+#cpq-quote-panel [hidden] {
+  display: none !important;
+}
+
+#cpq-quote-panel h3 {
+  margin: 0 0 .8rem;
+  font-size: 1rem;
+}
+
+#cpq-quote-panel h4 {
+  margin: 0 0 .6rem;
+  font-size: .9rem;
+  font-weight: 600;
+}
+
+#cpq-quote-panel .cpq-quote-controls {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+#cpq-quote-panel .cpq-quote-block {
+  min-width: 0;
+  margin: 0;
+  padding: .75rem 0;
+  border-top: 1px solid var(--sg-border);
+}
+
+#cpq-quote-panel .cpq-quote-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem .75rem;
+}
+
+#cpq-quote-panel .cpq-quote-field {
+  min-width: 0;
+}
+
+#cpq-quote-panel .cpq-quote-wide {
+  grid-column: 1 / -1;
+}
+
+#cpq-quote-panel label {
+  display: block;
+  margin: 0 0 .3rem;
+  color: var(--sg-text);
+  font-size: .875rem;
+}
+
+#cpq-quote-panel input,
+#cpq-quote-panel select,
+#cpq-quote-panel textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: .45rem .6rem;
+  border: 1px solid var(--sg-border);
+  border-radius: .35rem;
+  background: var(--sg-bg);
+  color: var(--sg-text);
+  font: inherit;
+  line-height: 1.5;
+}
+
+#cpq-quote-panel textarea {
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#cpq-quote-panel textarea[readonly] {
+  background: var(--sg-soft);
+  color: var(--sg-text);
+}
+
+#cpq-quote-panel #cpq-buyer-country {
+  text-transform: uppercase;
+}
+
+#cpq-quote-panel .cpq-quote-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: .65rem 0;
+}
+
+#cpq-quote-panel .cpq-export-link,
+#cpq-quote-panel .cpq-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .35rem;
+  max-width: 100%;
+  margin: 0;
+  padding: .45rem .7rem;
+  border: 1px solid var(--sg-primary);
+  border-radius: .35rem;
+  background: var(--sg-bg);
+  color: var(--sg-primary);
+  font: inherit;
+  font-size: .875rem;
+  line-height: 1.5;
+  text-align: center;
+  text-decoration: none;
+  white-space: normal;
+  cursor: pointer;
+}
+
+#cpq-quote-panel .cpq-export-link {
+  flex: 1 1 9rem;
+}
+
+#cpq-quote-panel .cpq-export-link:hover,
+#cpq-quote-panel .cpq-copy-button:enabled:hover {
+  background: var(--sg-soft);
+  border-color: var(--sg-primary);
+  color: var(--sg-primary);
+  text-decoration: none;
+}
+
+#cpq-quote-panel :focus-visible {
+  outline: 2px solid var(--sg-primary);
+  outline-offset: 3px;
+}
+
+#cpq-quote-panel input:disabled,
+#cpq-quote-panel select:disabled,
+#cpq-quote-panel textarea:disabled,
+#cpq-quote-panel button:disabled,
+#cpq-quote-panel a[aria-disabled='true'] {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+#cpq-quote-panel a[aria-disabled='true'] {
+  pointer-events: none;
+}
+
+#cpq-quote-panel .cpq-quote-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: .35rem .75rem;
+  margin: .65rem 0;
+}
+
+#cpq-quote-panel .cpq-quote-meta dt {
+  color: var(--sg-muted);
+  font-weight: 400;
+}
+
+#cpq-quote-panel .cpq-quote-meta dd {
+  min-width: 0;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+#cpq-quote-panel #cpq-quote-status {
+  min-height: 1.5em;
+  margin: .6rem 0;
+  font-size: .875rem;
+  color: var(--sg-muted);
+}
+
+#cpq-quote-panel #cpq-quote-status[data-state='ok'] {
+  color: var(--tblr-success, var(--sg-ok));
+}
+
+#cpq-quote-panel #cpq-quote-status[data-state='error'] {
+  color: var(--tblr-danger, var(--sg-fuse));
+}
+
+#cpq-quote-panel #cpq-quote-status[data-state='pending'] {
+  color: var(--sg-primary);
+}
+
+#cpq-quote-panel .cpq-whatsapp-preview,
+#cpq-quote-panel .cpq-letter-editor {
+  display: grid;
+  min-width: 0;
+  gap: .65rem;
+  margin-top: .75rem;
+}
+
+#cpq-quote-panel .cpq-copy-button {
+  justify-self: start;
+}
+
+#cpq-quote-panel #cpq-letter {
+  margin-top: .75rem;
+  padding-bottom: max(.25rem, env(safe-area-inset-bottom));
+}
+
+@media (max-width: 768px) {
+  #cpq-quote-panel {
+    margin-bottom: .6rem;
+    padding: .65rem;
+  }
+  #cpq-quote-panel .cpq-quote-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: .65rem;
+  }
+  #cpq-quote-panel input,
+  #cpq-quote-panel select,
+  #cpq-quote-panel textarea {
+    font-size: 1rem;
+  }
+  #cpq-quote-panel .cpq-export-link {
+    flex-basis: 100%;
+  }
+  #cpq-quote-panel .cpq-copy-button {
+    width: 100%;
+    justify-self: stretch;
+  }
+}

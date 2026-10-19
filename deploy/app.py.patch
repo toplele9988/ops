@@ -1,0 +1,75 @@
+--- /opt/imgw/wechat/console/app.py	2026-10-19 06:59:41.873597089 -0700
++++ /home/cz/swarm/release-t01/console/app.py	2026-10-19 15:17:30.514839940 -0700
+@@ -539,6 +539,27 @@
+     return error_response(request, 500, incident)
+ 
+ 
++JSON_POST_PATH = re.compile(r'^/api/(?:cpq/(?:calculate|quotes|assets/a_[0-9a-f]{16}/flag)|quotes/q_[0-9a-f]{32}/letter)$')
++JSON_POST_LIMIT = 65536
++
++
++async def _read_json_post(request, session):
++    """Session-only JSON POST: exact content type, one valid CSRF header, bounded body."""
++    if session is None or not session.authenticated or request.state.proxy_trusted:
++        return 403, None
++    if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
++        return 415, None
++    header_values = request.headers.getlist('x-csrf-token')
++    if len(header_values) != 1 or not auth.csrf_matches(session.csrf, header_values[0]):
++        return 403, None
++    body = bytearray()
++    async for chunk in request.stream():
++        body.extend(chunk)
++        if len(body) > JSON_POST_LIMIT:
++            return 413, None
++    return None, bytes(body)
++
++
+ class SecurityMiddleware:
+     def __init__(self, application):
+         self.application = application
+@@ -613,7 +634,23 @@
+                 return
+             downstream_receive = receive
+             batch_post = auth.batch_post(request.method, scope['path'])
+-            if request.method != 'GET' and (not request.state.proxy_trusted or batch_post):
++            json_post = request.method == 'POST' and JSON_POST_PATH.match(scope['path']) is not None
++            if json_post:
++                status, json_body = await _read_json_post(request, session)
++                if status is not None:
++                    await reject(status)
++                    return
++                json_delivered = False
++
++                async def replay_json():
++                    nonlocal json_delivered
++                    if not json_delivered:
++                        json_delivered = True
++                        return {'type': 'http.request', 'body': json_body, 'more_body': False}
++                    return await receive()
++
++                downstream_receive = replay_json
++            elif request.method != 'GET' and (not request.state.proxy_trusted or batch_post):
+                 if session is None and not request.state.proxy_trusted:
+                     await reject(403)
+                     return
+@@ -852,6 +889,19 @@
+ ]
+ from . import v3
+ routes += v3.build(sys.modules[__name__])
++
++
++def _cpq_routes():
++    # A missing secret or dependency must not take the console down; the CPQ pages simply stay absent.
++    try:
++        from .routes.strobe_routes import build_routes, settings_from_env
++        return build_routes(settings_from_env())
++    except Exception as exc:
++        LOGGER.error('cpq_routes_unavailable type=%s', type(exc).__name__)
++        return []
++
++
++routes[0:0] = _cpq_routes()
+ application = Starlette(debug=False, routes=routes,
+                         exception_handlers={HTTPException: http_error, 500: server_error})
+ app = SecurityMiddleware(application)

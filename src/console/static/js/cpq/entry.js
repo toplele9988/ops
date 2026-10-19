@@ -2,6 +2,7 @@ import {createBasket} from './basket.js';
 import * as drawerModel from './drawer-model.js';
 import * as costChart from './cpq-cost-chart.js';
 import {initDrawer} from './cpq-drawer.js';
+import {initActions} from './cpq-actions.js';
 import '../../strobe/gallery.js';
 
 const DEFAULT_TARGET_MARGIN=0.18;
@@ -31,6 +32,7 @@ function start(){
     const target_margin=await initialMargin();
     const next=createBasket(undefined,{target_margin});
     const nextDrawer=initDrawer({root:document.getElementById('cpq-drawer'),basket:next});
+    initActions({root:document.getElementById('cpq-drawer')});
     basket=next;drawer=nextDrawer;
     window.XL=window.XL||{};
     Object.assign(window.XL,{basket,cpqDrawer:drawer});

@@ -114,7 +114,7 @@ class CPQService:
             if 'cpq.view_supplier' in permissions:
                 item['offers'] = [{k: o[k] for k in ('supplier_id','supplier_name','exw_cny','valid_until')} for o in offers]
             models.append(item)
-        result = {'fx': fx, 'fx_missing': fx is None, **{k: json_value(config[k]) for k in ('thresholds','pricing','containers')}, 'lanes': [json_value(l) for l in self.store.lanes()], 'accessories': self.store.accessories(), 'models': models, 'cost_masked': not visible, 'permissions': sorted(permissions)}
+        result = {'fx': fx, 'fx_missing': fx is None, **{k: json_value(config[k]) for k in ('thresholds','pricing','containers','payment_terms') if k in config}, 'lanes': [json_value(l) for l in self.store.lanes()], 'accessories': self.store.accessories(), 'models': models, 'cost_masked': not visible, 'permissions': sorted(permissions)}
         return result if visible else mask(result)
 
     def _validate(self, payload, permissions):

@@ -1,0 +1,19 @@
+--- /opt/imgw/wechat/console/templates/v3/base3.html	2026-10-19 06:59:41.876597081 -0700
++++ /home/cz/swarm/release-t01/console/templates/v3/base3.html	2026-10-19 15:17:30.517839933 -0700
+@@ -15,6 +15,7 @@
+   <script src="/static/vendor/tabler.min.js" defer></script>
+   <script src="/static/vendor/echarts.min.js" defer></script>
+   <script src="/static/v3/v3.js" defer></script>
++  {% block head_extra %}{% endblock %}
+ </head>
+ <body class="v3-console">
+   <a class="v3-skip-link" href="#main">跳到正文</a>
+@@ -29,7 +30,7 @@
+         <div class="collapse navbar-collapse" id="v3-sidebar-menu">
+           <nav aria-label="主导航">
+             <ul class="navbar-nav">
+-              {% for key, label, path in [('overview', '总览', '/v3/'), ('products', '产品库', '/v3/products'), ('library', '资料库', '/v3/library'), ('suppliers', '供应商', '/v3/suppliers'), ('inquiries', '询价雷达', '/v3/inquiries'), ('batches', '批次审批', '/v3/batches')] %}
++              {% for key, label, path in [('overview', '总览', '/v3/'), ('products', '产品库', '/v3/products'), ('strobes', '频闪灯', '/strobes'), ('library', '资料库', '/v3/library'), ('suppliers', '供应商', '/v3/suppliers'), ('inquiries', '询价雷达', '/v3/inquiries'), ('batches', '批次审批', '/v3/batches')] %}
+               <li class="nav-item{% if nav | default('') == key %} active{% endif %}">
+                 <a class="nav-link" href="{{ path }}"{% if nav | default('') == key %} aria-current="page"{% endif %}>
+                   <span class="nav-link-title">{{ label }}</span>

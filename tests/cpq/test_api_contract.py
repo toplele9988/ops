@@ -182,3 +182,8 @@ def test_context_without_model_ids_is_empty(sales,seeded):
     response = sales.get('/api/cpq/context')
     assert response.status_code==200 and response.json()['models']==[]
     assert sales.get('/api/cpq/context',params={'model_ids':''}).status_code==400
+
+
+def test_context_lists_payment_terms(sales,seeded):
+    ids = [t['id'] for t in context(sales,seeded)['payment_terms']]
+    assert 'TT_30_70' in ids
