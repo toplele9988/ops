@@ -1,0 +1,1 @@
+"""Live catalog acceptance checks."""
