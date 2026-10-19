@@ -23,3 +23,12 @@ A2 数据层与接口(repository、规格解析、媒体、/api/strobes、/api/c
 - A 批合计:151 tests,0 skip/xfail;业务阈值无硬编码
 ## 待办
 接入控制台(放宽 JSON POST、/media/a 排序在旧路由前、挂载路由)→ Batch B 前端 → Batch C 导出/函件 → 部署
+
+## Batch B1(JS 引擎)— 完成:与 Python 引擎对 12 组黄金向量一致(38 tests;改坏引擎迭代次数会被测试抓到)
+## Batch B2(/strobes 画廊、灯箱、抽屉静态结构)— 完成,镜像全量 163 passed / 0 skipped
+- 新增:`templates/strobe/*`、`static/strobe/{strobe.css,gallery.js,lightbox.js}`、`/strobes` 页面路由、`test_csp_static`、`test_dom_contract`
+- Claude 手修:列表字段未知值保持 null(原先页面转成 []),模板判空;测试对 null 兼容
+- 仓库布局约定:`src/` 对应生产 `/opt/imgw/wechat/`(`src/config`、`src/data` 为符号链接)
+- 集成待办:`v3/base3.html` 需加 `{% block head_extra %}`;导航加"频闪灯";`/media/a/` 排在旧路由前;中间件放宽 JSON POST
+## 待办
+Batch B3(抽屉交互/报价篮/成本构成图/毛利滑块)→ Batch C(冻结/导出/泄露断路器/Sol 函件)→ 集成部署 → 浏览器验收

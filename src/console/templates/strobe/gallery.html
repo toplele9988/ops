@@ -1,0 +1,22 @@
+{% extends 'v3/base3.html' %}
+{% from 'strobe/_card.html' import card %}
+{% block title %}频闪灯 Strobe · {{ items | length }}{% endblock %}
+{% block subtitle %}产品图片与已知规格；未确认的参数不作推定。{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/strobe/strobe.css">{% endblock %}
+{% block content %}
+{% set columns = [('image','缩略图'),('sku','对客 SKU'),('name','产品名'),('ip','IP'),('rgb','RGB 颗数'),('white','白光颗数'),('segments','分段'),('dmx','DMX 模式'),('power','功率 W'),('weight','净重 kg'),('carton','纸箱规格'),('fc','航空箱方案'),('completeness','完整度'),('actions','操作')] %}
+<div id="sg-root" data-view="grid">
+<div class="sg-toolbar"><label class="sg-search"><span class="visually-hidden">搜索型号或名称</span><input id="sg-search" class="form-control" type="search" maxlength="200" placeholder="搜索型号或名称"></label><div id="sg-view-toggle" class="btn-group" role="group" aria-label="显示方式">{% for mode,label in [('grid','▦ 卡片'),('table','☰ 表格')] %}<button class="btn btn-outline-secondary" type="button" data-view="{{ mode }}" aria-pressed="{{ 'true' if mode == 'grid' else 'false' }}">{{ label }}</button>{% endfor %}</div><button class="btn btn-primary" type="button" data-bs-toggle="offcanvas" data-bs-target="#cpq-drawer" aria-controls="cpq-drawer">报价篮（<span id="cpq-count">0</span>）</button></div>
+<noscript><p>当前显示全部产品卡片。筛选、表格切换和灯箱需要 JavaScript。</p></noscript>
+<div id="sg-filters">
+<fieldset><legend>IP 等级</legend><div>{% for ip in items | map(attribute='ip_rating') | reject('none') | unique | sort %}{% if ip %}<button type="button" class="sg-chip" data-filter="ip" data-value="{{ ip }}" aria-pressed="false">{{ ip }}</button>{% endif %}{% endfor %}<button type="button" class="sg-chip" data-filter="ip" data-value="unknown" aria-pressed="false">待确认</button></div></fieldset>
+{% for key,label,choices in [('source','光源',[('RGB','RGB'),('W','W'),('RGB+W','RGB+W 双光源')]),('segments','像素分段',[('small','1–16 段'),('medium','17–48 段'),('large','>48 段')]),('power','功率区间',[('small','≤500 W'),('medium','>500 且 ≤1000 W'),('large','>1000 W')]),('dmx','DMX 最大通道',[('small','≤16 ch'),('medium','17–64 ch'),('large','>64 ch')]),('fc','航空箱方案',[('yes','有方案'),('no','无方案'),('estimated','估算')]),('completeness','规格完整度',[('complete','完整'),('incomplete','待补全')])] %}<fieldset><legend>{{ label }}</legend><div>{% for value,text in choices + [('unknown','待确认')] %}<button type="button" class="sg-chip" data-filter="{{ key }}" data-value="{{ value }}" aria-pressed="false">{{ text }}</button>{% endfor %}</div></fieldset>{% endfor %}
+</div>
+<div class="sg-toolbar"><label for="sg-sort">排序</label><select id="sg-sort" class="form-select">{% for value,label in [('default','默认'),('power','功率'),('leds','灯珠总数'),('segments','分段数'),('weight','重量')] %}<option value="{{ value }}">{{ label }}</option>{% endfor %}<option value="column" hidden>按表头排序</option></select><button id="sg-direction" type="button" class="btn btn-outline-secondary" aria-pressed="false">升序 ↑</button><button id="sg-reset" type="button" class="btn btn-outline-secondary">清除筛选</button><span id="sg-count" role="status" aria-live="polite">{{ items | length }} / {{ items | length }} 款</span><details id="sg-columns" hidden><summary>显示列</summary><div>{% for key,label in columns %}{% if key not in ['image','sku','actions'] %}<label><input type="checkbox" data-column-toggle="{{ key }}" checked> {{ label }}</label>{% endif %}{% endfor %}</div></details></div>
+<section id="sg-grid" class="sg-grid" aria-label="产品卡片">{% for item in items %}{{ card(item) }}{% endfor %}</section>
+<section id="sg-table-wrap" tabindex="0" aria-label="产品规格表" hidden>{% include 'strobe/_table.html' %}</section><p id="sg-empty"{% if items %} hidden{% endif %}>暂无符合条件的产品。</p>
+{% include 'strobe/_lightbox.html' %}{% include 'strobe/_cpq_drawer.html' %}
+<script type="application/json" id="sg-data">{{ items | tojson }}</script>
+</div>
+<script type="module" src="/static/strobe/gallery.js"></script>
+{% endblock %}
