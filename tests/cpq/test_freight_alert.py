@@ -1,9 +1,10 @@
-"""Freight alerts independent of the deferred API tests."""
+'''Freight alerts and quote acknowledgement enforcement.'''
 from dataclasses import replace
 import pytest
 from console.cpq import compute, evaluate
 from console.cpq.models import GateContext
 from .engine_helpers import TEST_LANES, compute_case, make_inputs
+from .test_quotes import _images
 
 
 def test_freight_exceeds_goods_alert(engine_ctx: GateContext) -> None:
@@ -40,3 +41,13 @@ def test_freight_ratio_uses_exw_only(engine_ctx: GateContext) -> None:
     for result in (cheap, expensive):
         assert result.totals.freight_ratio == pytest.approx(result.totals.freight_usd / 100)
     assert cheap.totals.freight_ratio == expensive.totals.freight_ratio
+
+
+def test_export_blocked_without_freight_ack(sales_cost,freight_heavy_payload,app,monkeypatch):
+    _images(app,monkeypatch)
+    payload = freight_heavy_payload|{'payment_terms_id':'TT_30_70'}
+    r = sales_cost.post('/api/cpq/quotes',json=payload|{'acks':[]})
+    assert r.status_code==409,r.text
+    assert r.json()['error']['code']=='ACK_REQUIRED'
+    r2 = sales_cost.post('/api/cpq/quotes',json=payload|{'acks':['FREIGHT_EXCEEDS_GOODS']})
+    assert r2.status_code==201,r2.text

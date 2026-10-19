@@ -1,0 +1,13 @@
+company: ""
+address: ""
+contact: ""
+email: ""
+whatsapp: ""
+website: ""
+logo_path: ""
+brand: XL
+warranty: ""
+price_includes: ""
+# Reference an existing payment_terms id from cpq.yaml.
+payment_terms: ""
+default_lead_time: ""

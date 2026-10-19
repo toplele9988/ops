@@ -1,4 +1,4 @@
-"""Calculate-layer gates; quote freezing belongs to batch C."""
+'''Calculate-layer and quote-freezing gates.'''
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
@@ -8,6 +8,7 @@ import pytest
 from console.cpq.config import config_from_dict
 from console.cpq.models import Lane,json_value
 from console.security.roles import ROLE_PERMISSIONS
+from .test_quotes import _images
 
 
 def calculate(client,payload):
@@ -45,16 +46,34 @@ def test_margin_ok_at_15(sales_cost,seeded,app):
     assert not any(code.startswith('MARGIN') for code in codes(body))
 
 
-def test_margin_below_min_requires_override(sales,seeded,app):
-    body = calculate(sales,priced(seeded,app,0.10))
+def test_margin_below_min_requires_override(sales,manager,seeded,app,monkeypatch):
+    _images(app,monkeypatch)
+    payload = priced(seeded,app,0.10)
+    body = calculate(sales,payload)
     assert 'MARGIN_BELOW_MIN' in codes(body) and body['gate']['requires_override'] is True
+    payload.update(payment_terms_id='TT_30_70',acks=body['gate']['requires_ack'])
+    for client,reason in ((sales,''),(manager,'  short  ')):
+        response = client.post('/api/cpq/quotes',json=payload|{'override_reason':reason})
+        assert response.status_code==409,response.text
+        assert response.json()['error']['code']=='OVERRIDE_REQUIRED'
+    response = manager.post('/api/cpq/quotes',json=payload|{'override_reason':'Strategic first order, trial container'})
+    assert response.status_code==201,response.text
+    assert {r['action'] for r in seeded.store.audit_log(response.json()['quote_token'])}=={'QUOTE_FROZEN','MARGIN_OVERRIDE'}
 
 
-def test_margin_fuse_hard_block(manager,seeded,app):
+def test_margin_fuse_hard_block(manager,sales,seeded,app,monkeypatch):
+    _images(app,monkeypatch)
     payload = priced(seeded,app,-0.03)
     payload['override_reason']='Synthetic manager reason exceeding minimum length'
     body = calculate(manager,payload)
     assert 'MARGIN_FUSE' in codes(body) and body['gate']['can_save'] is False
+    payload['payment_terms_id']='TT_30_70'
+    for client,draft in ((sales,False),(manager,False),(manager,True)):
+        response = client.post('/api/cpq/quotes',json=payload|{'draft':draft})
+        assert response.status_code==409,response.text
+        assert response.json()['error']['code']=='MARGIN_FUSE'
+        assert response.json()['error']['details']['blocked_by'][0]=='MARGIN_FUSE'
+    assert seeded.store.read('SELECT COUNT(*) AS n FROM cpq_quote')[0]['n']==0
 
 
 def test_margin_fuse_boundary(manager,seeded,app):
