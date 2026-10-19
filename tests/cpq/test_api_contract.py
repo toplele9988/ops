@@ -170,3 +170,9 @@ def test_case_cost_override_permission(sales,sales_cost,seeded):
 def test_body_limit(sales):
     assert sales.post('/api/cpq/calculate',content=b' '*65537,headers={'Content-Type':'application/json'}).status_code==413
     assert sales.post('/api/cpq/calculate',content=iter([b' '*40000,b' '*40000]),headers={'Content-Type':'application/json'}).status_code==413
+
+
+def test_context_lists_permissions(sales,manager,seeded):
+    assert 'cpq.override_margin' not in context(sales,seeded)['permissions']
+    assert 'cpq.quote' in context(sales,seeded)['permissions']
+    assert 'cpq.override_margin' in context(manager,seeded)['permissions']
