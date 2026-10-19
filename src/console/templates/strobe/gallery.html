@@ -2,7 +2,7 @@
 {% from 'strobe/_card.html' import card %}
 {% block title %}频闪灯 Strobe · {{ items | length }}{% endblock %}
 {% block subtitle %}产品图片与已知规格；未确认的参数不作推定。{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/strobe/strobe.css">{% endblock %}
+{% block head_extra %}<meta name="csrf-token" content="{{ csrf | default('') }}"><link rel="stylesheet" href="/static/strobe/strobe.css"><link rel="stylesheet" href="/static/strobe/strobe_drawer.css">{% endblock %}
 {% block content %}
 {% set columns = [('image','缩略图'),('sku','对客 SKU'),('name','产品名'),('ip','IP'),('rgb','RGB 颗数'),('white','白光颗数'),('segments','分段'),('dmx','DMX 模式'),('power','功率 W'),('weight','净重 kg'),('carton','纸箱规格'),('fc','航空箱方案'),('completeness','完整度'),('actions','操作')] %}
 <div id="sg-root" data-view="grid">
@@ -19,4 +19,5 @@
 <script type="application/json" id="sg-data">{{ items | tojson }}</script>
 </div>
 <script type="module" src="/static/strobe/gallery.js"></script>
+<script type="module" src="/static/js/cpq/entry.js"></script>
 {% endblock %}

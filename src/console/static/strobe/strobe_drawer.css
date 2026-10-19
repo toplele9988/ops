@@ -605,3 +605,22 @@
     scroll-behavior: auto !important;
   }
 }
+
+#cpq-drawer #cpq-freight-ratio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .35rem .65rem;
+}
+
+#cpq-drawer #cpq-freight-ratio > label,
+#cpq-drawer #cpq-freight-ratio > #cpq-freight-status {
+  flex: 1 0 100%;
+  width: auto;
+  min-width: 0;
+  writing-mode: horizontal-tb;
+  white-space: normal;
+}
+
+#cpq-drawer #cpq-freight-ratio > progress { flex: 1 1 8rem; min-width: 0; }
+#cpq-drawer #cpq-freight-ratio > output { flex: 0 0 auto; width: auto; white-space: nowrap; }

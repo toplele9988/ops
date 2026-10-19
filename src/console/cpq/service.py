@@ -98,7 +98,7 @@ class CPQService:
 
     def build_context(self, model_ids, permissions):
         require(permissions, 'cpq.quote')
-        if not isinstance(model_ids, (list, tuple)) or not 1<=len(model_ids)<=50 or any(not isinstance(v,str) or not v.strip() or v!=v.strip() for v in model_ids):
+        if not isinstance(model_ids, (list, tuple)) or not 0<=len(model_ids)<=50 or any(not isinstance(v,str) or not v.strip() or v!=v.strip() for v in model_ids):
             raise CPQError(400, 'BAD_MODEL_IDS')
         today, config, visible = self.today(), self.config, 'cpq.view_cost' in permissions
         fx = self.store.fx(today)

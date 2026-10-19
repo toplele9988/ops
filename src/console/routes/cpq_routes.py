@@ -67,10 +67,10 @@ class CPQAPI:
         try:
             permissions = self.authorize(request)
             values = request.query_params.getlist('model_ids')
-            if len(values)!=1:
+            if len(values)>1:
                 raise CPQError(400,'BAD_MODEL_IDS')
-            ids = [v.strip() for v in values[0].split(',')]
-            if not 1<=len(ids)<=50 or not all(ids):
+            ids = [v.strip() for v in values[0].split(',')] if values else []
+            if len(ids)>50 or (values and not all(ids)):
                 raise CPQError(400,'BAD_MODEL_IDS')
         except CPQError as exc:
             return error(exc.status_code,exc.code,exc.details)

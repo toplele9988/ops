@@ -32,3 +32,12 @@ A2 数据层与接口(repository、规格解析、媒体、/api/strobes、/api/c
 - 集成待办:`v3/base3.html` 需加 `{% block head_extra %}`;导航加"频闪灯";`/media/a/` 排在旧路由前;中间件放宽 JSON POST
 ## 待办
 Batch B3(抽屉交互/报价篮/成本构成图/毛利滑块)→ Batch C(冻结/导出/泄露断路器/Sol 函件)→ 集成部署 → 浏览器验收
+
+## Batch B3(抽屉交互)— 完成,镜像全量 185 passed / 0 skipped;真实 Chromium 验收通过
+- 拆分交付:B3a 篮子、B3c1 成本图+样式、B3c2 纯逻辑模块(node 测试)、B3c3 DOM 接线
+- 设计调整:抽屉所有数字取自服务端 `/api/cpq/calculate`(120ms 去抖,只采最新响应),不用本地 JS 引擎(context 缺引擎元数据,且成本隔离更稳);JS 引擎保留并与 Python 黄金向量一致
+- Claude 修补:context 不带 model_ids 返回空列表(消除每次加载的 400 红字);行金额字段 `amount_usd`;运费比条布局与分区取自阈值;gallery.html 引入抽屉 css/js 与 csrf meta;actionStates 对齐服务端 gate 语义(blocked_by 含可放行项)
+- 浏览器验收(Playwright + Chromium 156,合成汇率/航线/包装数据,仅镜像):1440/390 宽度无横向滚动;0 控制台报错;0 CSP 违规;加入篮子→选航线→服务端算价→运费超货值需确认→毛利低于最低线需 ≥10 字原因→毛利熔断全禁,均符合工单;截图见 `task_01_screens/`
+- 测试脚本:`tests/browser/{run,run2,run3}.py`(服务:镜像内 `tests/browser/serve.py`,用合成数据)
+## 待办
+Batch C(冻结/导出/泄露断路器/Sol 函件)→ 集成(中间件放宽 JSON POST + CSRF、路由顺序、base3 head_extra、导航项)→ 部署前备份 → 验收报告

@@ -176,3 +176,9 @@ def test_context_lists_permissions(sales,manager,seeded):
     assert 'cpq.override_margin' not in context(sales,seeded)['permissions']
     assert 'cpq.quote' in context(sales,seeded)['permissions']
     assert 'cpq.override_margin' in context(manager,seeded)['permissions']
+
+
+def test_context_without_model_ids_is_empty(sales,seeded):
+    response = sales.get('/api/cpq/context')
+    assert response.status_code==200 and response.json()['models']==[]
+    assert sales.get('/api/cpq/context',params={'model_ids':''}).status_code==400
