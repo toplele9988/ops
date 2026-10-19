@@ -155,5 +155,6 @@ class StrobeAPI:
 def build_routes(settings: Settings) -> list[Route]:
     from console.routes.cpq_routes import build_cpq_routes
     from console.routes.export_routes import build_export_routes
+    from console.routes.letter_routes import build_letter_routes
     api = StrobeAPI(settings)
-    return [Route('/api/strobes', api.list_strobes, methods=['GET'], name='strobe_list'), Route('/api/strobes/{model_id}', api.get_strobe, methods=['GET'], name='strobe_detail'), Route('/media/a/{asset_uid}', api.get_media, methods=['GET'], name='strobe_media'), Route('/strobes', api.gallery, methods=['GET'], name='strobe_gallery')] + build_cpq_routes(settings) + build_export_routes(settings)
+    return [Route('/api/strobes', api.list_strobes, methods=['GET'], name='strobe_list'), Route('/api/strobes/{model_id}', api.get_strobe, methods=['GET'], name='strobe_detail'), Route('/media/a/{asset_uid}', api.get_media, methods=['GET'], name='strobe_media'), Route('/strobes', api.gallery, methods=['GET'], name='strobe_gallery')] + build_cpq_routes(settings) + build_export_routes(settings) + build_letter_routes(settings)
