@@ -1,0 +1,45 @@
+*Quotation {{ dto.quote_no|inline }}* · valid until {{ dto.valid_until|inline }}
+{% if known(dto.seller.company) %}
+{{ dto.seller.company|inline }}
+{% endif %}
+
+{% for line in dto.lines %}
+*{{ line.line_no }}) {{ line.sku|inline }}*
+_{{ line.product_name|inline }}_
+{% if line.highlights %}
+• {{ line.highlights|join(' · ')|inline }}
+{% endif %}
+{% if line.specs %}
+• {% for spec in line.specs %}{{ spec.label|inline }}: {{ spec.value|inline }}{{ ' · ' if not loop.last else '' }}{% endfor %}
+
+{% endif %}
+• Packing: {% for label,value in packing_rows(line.packing) %}{{ label }}: {{ value|inline }}{{ ', ' if not loop.last else '' }}{% endfor %}
+
+{% if line.accessories_included %}
+• Included: {{ line.accessories_included|join('; ')|inline }}
+{% endif %}
+• Quantity: {{ line.qty }} pcs
+{% if known(line.unit_price) %}
+• Unit price: *USD {{ line.unit_price|money }}/pc*
+{% endif %}
+{% if known(line.amount) %}
+• Amount: USD {{ line.amount|money }}
+{% endif %}
+{% if known(line.lead_time) %}
+• Lead time: {{ line.lead_time|inline }}{{ ' days' if line.lead_time.replace('-', '').isdigit() else '' }}
+{% endif %}
+
+{% endfor %}
+{% if known(dto.totals.total_amount) %}
+*Total: USD {{ dto.totals.total_amount|money }} · {{ dto.incoterm|inline }}{{ ' ' + (dto.named_place|inline) if known(dto.named_place) else '' }}*
+{% endif %}
+Shipment: {{ dto.shipping_mode_label|inline }}{{ ', ' + (dto.totals.packages|string) + ' packages' if known(dto.totals.packages) else '' }}{{ ', ' + (dto.totals.cbm|number) + ' CBM' if known(dto.totals.cbm) else '' }}{{ ', ' + (dto.totals.gw_kg|number) + ' kg' if known(dto.totals.gw_kg) else '' }}
+{% for label,value in [('Payment',dto.terms.payment),('Lead time',dto.terms.lead_time),('Warranty',dto.terms.warranty),('Price includes',dto.terms.price_includes)] %}
+{% if known(value) %}
+{{ label }}: {{ value|inline }}{{ ' days' if label == 'Lead time' and value.replace('-', '').isdigit() else '' }}
+{% endif %}
+{% endfor %}
+(Product photos sent separately)
+{% if footer_note %}
+{{ footer_note }}
+{% endif %}

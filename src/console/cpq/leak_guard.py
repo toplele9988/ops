@@ -32,6 +32,7 @@ class LeakContext:
     cost_values: tuple[float, ...]
 
 
+SMALL_COST_INTEGER_LIMIT = Decimal(100)  # small whole numbers collide with quantities; they only count when written with decimals
 _CNY = r'¥|￥|CNY|RMB|人民币|元'
 _CURRENCY = re.compile(r'US\$|USD|\$|¥|￥|CNY|RMB|人民币|元|€', re.IGNORECASE)
 _NUMBER = re.compile(r'(?<![\d.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!\d|[.,]\d)')
@@ -115,6 +116,8 @@ def scan(text: str, ctx: LeakContext) -> list[Hit]:
         for match in _NUMBER.finditer(text):
             number = Decimal(match.group().replace(',', ''))
             if number not in costs:
+                continue
+            if number < SMALL_COST_INTEGER_LIMIT and '.' not in match.group():
                 continue
             if any(max(start - match.end(), match.start() - end, 0) <= 12 for start, end in currencies):
                 found.add(('cost_value', match.start()))
