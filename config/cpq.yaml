@@ -1,0 +1,25 @@
+thresholds:
+  min_margin: 0.15
+  fuse_margin: -0.021
+  price_floor_cny_per_unit: { strobe: 260 }
+  freight_ratio: { sensitive: 0.30, heavy: 0.70, inverted: 1.00 }
+  fx_stale_days: 7
+  fx_expired_days: 14
+  override_reason_min_chars: 10
+pricing:
+  unit_price_step_usd: 0.5
+  fx_buffer_pct: 0.015
+  insurance_rate: 0.003
+  insured_markup: 1.10
+  payment_fee_pct: 0.0
+  quote_validity_days: 15
+containers:
+  20GP: { usable_cbm: 28, max_kg: 20000 }
+  40GP: { usable_cbm: 58, max_kg: 26000 }
+  40HQ: { usable_cbm: 68, max_kg: 26000 }
+packing_estimate: { fc_pad_cm: 10, fc_tare_kg: 12 }
+public_sku: { pattern: "{brand}-STB-{seq:03d}" }
+payment_terms:
+  - { id: TT_30_70, en: "30% T/T deposit, 70% balance before shipment" }
+  - { id: TT_100, en: "100% T/T before shipment" }
+  - { id: ALI_TA, en: "Alibaba Trade Assurance" }
