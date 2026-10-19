@@ -1,0 +1,27 @@
+# 环境变量与密钥拦截
+*.env
+*.pem
+*.key
+*.token
+*.crt
+id_rsa*
+credentials*
+*secret*
+
+# 数据库与二进制数据
+*.sqlite3
+*.db
+*.bak*
+
+# 真实业务原始文件与大媒体文件
+*.xlsx
+*.xls
+*.pdf
+media/
+intake_inbox/
+
+# 运行日志与缓存
+*.log
+__pycache__/
+.cache/
+.DS_Store
