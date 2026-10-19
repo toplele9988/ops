@@ -97,6 +97,6 @@ s=$(curl -s -o /dev/null -w '%{http_code}' -m 8 http://127.0.0.1:8790/strobes); 
 
 echo "=== 8. Sol 沙箱自检（与控制台相同的沙箱属性；失败仅警告，函件功能将返回 LETTER_FAILED）"
 SAMPLE='{"dto":{"quote_no":"Q000000-000","buyer":{"contact":"Test"},"incoterm":"DDP","named_place":"Hamburg","lines":[{"sku":"XL-STB-001","qty":2,"unit_price":100.0,"amount":200.0}],"totals":{"total_amount":200.0}},"tone":"formal","purpose":"first_quote","extra_notes":""}'
-echo "$SAMPLE" | systemd-run --wait --pipe --quiet --collect -p User=imgw -p Group=imgw -p WorkingDirectory=$W -p Environment=PYTHONPATH=$W -p NoNewPrivileges=false -p PrivateTmp=true -p ProtectSystem=strict -p ProtectHome=true -p ReadWritePaths=/var/lib/imgw -p EnvironmentFile=$ENVF /opt/imgw/venv/bin/python $W/scripts/sol_letter.py 2>&1 | head -c 600 | sed 's/^/  /' || echo '  WARN: Sol 自检失败'
+echo "$SAMPLE" | systemd-run --wait --pipe --quiet --collect -p User=imgw -p Group=imgw -p WorkingDirectory=$W -p Environment=PYTHONPATH=$W -p NoNewPrivileges=false -p PrivateTmp=true -p ProtectSystem=strict -p ProtectHome=true -p ReadWritePaths=/var/lib/imgw -p EnvironmentFile=$ENVF -p EnvironmentFile=/etc/imgw/domestic-digest-routing.env -p EnvironmentFile=/etc/imgw/fetcher-llm.env /opt/imgw/venv/bin/python $W/scripts/sol_letter.py 2>&1 | head -c 600 | sed 's/^/  /' || echo '  WARN: Sol 自检失败'
 echo
 echo "完成。备份后缀 .bak-$TS。回滚：把 app.py.bak-$TS、templates/v3/base3.html.bak-$TS 覆盖回去，删除 $DROP 后 systemctl daemon-reload && systemctl restart imgw-console。"
