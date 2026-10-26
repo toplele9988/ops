@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "account": "mailbox@example.test",
+  "private_dir": "/absolute/path/to/private-data",
+  "key_file": "/absolute/path/to/private-key",
+  "poll_interval_seconds": 300,
+  "ui_port": 18792
+}
