@@ -1,5 +1,8 @@
 # 环境变量与密钥拦截
 *.env
+.env
+.env.*
+!.env.example
 *.pem
 *.key
 *.token
@@ -11,6 +14,10 @@ credentials*
 # 数据库与二进制数据
 *.sqlite3
 *.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3-*
 *.bak*
 
 # 真实业务原始文件与大媒体文件
@@ -25,3 +32,12 @@ intake_inbox/
 __pycache__/
 .cache/
 .DS_Store
+.venv/
+venv/
+node_modules/
+.pytest_cache/
+*.pyc
+*.pyo
+session/
+sessions/
+downloads/
