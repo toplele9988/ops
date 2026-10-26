@@ -1,0 +1,58 @@
+{
+  "company_knowledge.py": {
+    "source_sha256": "f17aaa6211922a79de783982aef705041c588418544a6f8ea57932543ecfbcaf",
+    "snapshot_sha256": "c822bea49b09ffa7fdd578f441be21573c1ee262f6aa224e4bbdfd8caed22979",
+    "redactions": [
+      {
+        "location": "KNOWN_WHATSAPP_CONFIG",
+        "replacement": "EXAMPLE_WHATSAPP_CONFIG (required)"
+      },
+      {
+        "location": "_seeds company ID",
+        "replacement": "EXAMPLE_COMPANY_ID"
+      },
+      {
+        "location": "_seeds company name",
+        "replacement": "EXAMPLE_COMPANY_NAME"
+      },
+      {
+        "location": "_seeds fixed company description",
+        "replacement": "synthetic description"
+      },
+      {
+        "location": "_seeds fixed business description",
+        "replacement": "synthetic description"
+      },
+      {
+        "location": "_visible company ID",
+        "replacement": "EXAMPLE_COMPANY_ID"
+      },
+      {
+        "location": "_visible company name",
+        "replacement": "EXAMPLE_COMPANY_NAME"
+      }
+    ],
+    "functions_and_classes": 53,
+    "audit_guard": true
+  },
+  "collection_policy.py": {
+    "source_sha256": "cfd487e56408d2fba761ffe92d3c3e1401ac31144e2995ebc986bdb057b187b6",
+    "snapshot_sha256": "b02886d10c7aff8f983735ac015b93aa7e6ed89d46f6a6d8306b52cd97c59ef8",
+    "redactions": [
+      {
+        "location": "public_selection API hostname",
+        "replacement": "EXAMPLE_API_HOST"
+      },
+      {
+        "location": "public_selection group name",
+        "replacement": "EXAMPLE_GROUP_NAME"
+      },
+      {
+        "location": "public_authorization_record instruction label",
+        "replacement": "synthetic label"
+      }
+    ],
+    "functions_and_classes": 25,
+    "audit_guard": true
+  }
+}
