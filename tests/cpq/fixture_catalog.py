@@ -24,17 +24,19 @@ def create_catalog(root, supplier='Synthetic Fixture Supplier'):
         CREATE TABLE multimedia_assets (asset_id TEXT PRIMARY KEY,nas_rel_path TEXT,source_type TEXT,extraction_snapshot_json TEXT);
         ''')
         db.execute('INSERT INTO cat_supplier VALUES (?,?)', ('synthetic-supplier',supplier))
-        for i in range(1,31):
+        for i in range(1,38):
             smid, model = f'supplier-model:fixture-{i}', f'fixture-model-{i}'
             db.execute('INSERT INTO cat_supplier_model VALUES(?,?,?)', (smid,'synthetic-supplier',model))
-            if i > 3: continue
             mid, oid = f'equipment:fixture-{i}', f'fixture-offer-{i}'
-            db.execute('INSERT INTO equipment_specs VALUES(?,?,?,?,?,?,?)', (mid,supplier,model,'strobe',100+i,'IP65','{}'))
+            db.execute('INSERT INTO equipment_specs VALUES(?,?,?,?,?,?,?)', (mid,supplier,model,'strobe',100+i,'IP65',json.dumps({'channel_modes':[16,32]})))
             db.execute('INSERT INTO cat_supplier_offer VALUES(?,?,?,?,?,?,?,?,?,?)', (oid,'synthetic-supplier',smid,date.today().isoformat(),None,100000,None,0,18000,2))
             db.execute('INSERT INTO cat_review VALUES(?,?,?,?)', (i,'offer',oid,'accept'))
             name=f'fixture-{i}.png'
-            Image.new('RGB',(500,100),(i*30,40,80)).save(media/name)
+            Image.new('RGB',(500,100),((i*30)%256,40,80)).save(media/name)
             db.execute('INSERT INTO multimedia_assets VALUES(?,?,?,?)', (f'asset:fixture-{i}',name,'supplier_image',json.dumps({'equipment_id':mid,'local_path':str(media/name)})))
+        name = 'fixture-1-detail.png'
+        Image.new('RGB', (500,100), (20,90,160)).save(media/name)
+        db.execute('INSERT INTO multimedia_assets VALUES(?,?,?,?)', ('asset:fixture-1-detail',name,'supplier_image',json.dumps({'equipment_id':'equipment:fixture-1','local_path':str(media/name)})))
     return path
 
 if __name__ == '__main__':

@@ -1,0 +1,194 @@
+{
+  "icbu_inbound_receiver.py": {
+    "replacements": [
+      {
+        "line": 35,
+        "category": "account"
+      },
+      {
+        "line": 37,
+        "category": "network",
+        "env": "ICBU_EXAMPLE_ALLOWED_NETWORK"
+      },
+      {
+        "line": 404,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_01",
+        "purpose": "search_knowledge.py"
+      },
+      {
+        "line": 404,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_02",
+        "purpose": "ask_qwen.py"
+      },
+      {
+        "line": 692,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_03",
+        "purpose": "inbound.sqlite3"
+      },
+      {
+        "line": 694,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_04",
+        "purpose": "search_knowledge.py"
+      },
+      {
+        "line": 695,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_05",
+        "purpose": "ask_qwen.py"
+      }
+    ],
+    "imports": [
+      "__future__",
+      "argparse",
+      "contextlib",
+      "datetime",
+      "hashlib",
+      "hmac",
+      "http.server",
+      "icbu_live_drafts",
+      "icbu_official_imports",
+      "icbu_operations",
+      "icbu_probe_download",
+      "icbu_probe_heartbeat",
+      "ipaddress",
+      "json",
+      "math",
+      "os",
+      "pathlib",
+      "re",
+      "signal",
+      "socket",
+      "sqlite3",
+      "stat",
+      "subprocess",
+      "tempfile",
+      "threading",
+      "time",
+      "urllib.parse",
+      "uuid"
+    ],
+    "snapshot_sha256": "092e475a73a9b8f8341b49fc2089f9a728469ec50be2d60409504edfeb54ca87",
+    "entrypoint_disabled": true
+  },
+  "icbu_live_drafts.py": {
+    "replacements": [
+      {
+        "line": 1,
+        "category": "description"
+      },
+      {
+        "line": 11,
+        "category": "description"
+      },
+      {
+        "line": 12,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_06",
+        "purpose": "icbu-live-drafts.json"
+      },
+      {
+        "line": 63,
+        "category": "account"
+      },
+      {
+        "line": 235,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_07",
+        "purpose": "wechat"
+      },
+      {
+        "line": 235,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_08",
+        "purpose": "scripts"
+      },
+      {
+        "line": 252,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_09",
+        "purpose": "private-assistant.json"
+      },
+      {
+        "line": 280,
+        "category": "account"
+      },
+      {
+        "line": 285,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_10",
+        "purpose": "checkpoints"
+      },
+      {
+        "line": 285,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_11",
+        "purpose": "phase7-analysis-usage.sqlite3"
+      },
+      {
+        "line": 286,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_12",
+        "purpose": "usage.json"
+      },
+      {
+        "line": 286,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_13",
+        "purpose": "icbu-quota-text-models.json"
+      },
+      {
+        "line": 306,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_14",
+        "purpose": "icbu-live-draft-priority.json"
+      },
+      {
+        "line": 341,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_15",
+        "purpose": "inbound.sqlite3"
+      },
+      {
+        "line": 343,
+        "category": "path",
+        "env": "ICBU_EXAMPLE_PATH_16",
+        "purpose": "icbu-public-facts.json"
+      }
+    ],
+    "imports": [
+      "__future__",
+      "argparse",
+      "contextlib",
+      "datetime",
+      "domestic_cli",
+      "domestic_digest",
+      "fcntl",
+      "hashlib",
+      "icbu_inbound_receiver",
+      "icbu_knowledge_drafts",
+      "icbu_operations",
+      "json",
+      "math",
+      "os",
+      "pathlib",
+      "re",
+      "signal",
+      "sqlite3",
+      "stat",
+      "supplier_knowledge.icbu_quota_only_models_v1",
+      "sys",
+      "tempfile",
+      "threading",
+      "time",
+      "uuid",
+      "video_knowledge.analysis_budget_policy",
+      "video_knowledge.assistant_models"
+    ],
+    "snapshot_sha256": "6219db699dcd5d2e1ff99aff093a1489f1736023dceadad50eb26e8d75b1a38e",
+    "entrypoint_disabled": true
+  }
+}

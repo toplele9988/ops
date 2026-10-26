@@ -63,7 +63,7 @@ def snapshot_db(tmp_path_factory):
         if not source or not os.environ.get('MEDIA_ROOT'):
             raise RuntimeError('existing mode requires XL_DB_PATH and MEDIA_ROOT')
         return backup(source,tmp_path_factory.mktemp('cpq-explicit-existing')/'catalog.sqlite3')
-    from tests.cpq.fixture_catalog import create_catalog
+    from .fixture_catalog import create_catalog
     return create_catalog(tmp_path_factory.mktemp('synthetic-cpq-catalog'),SUPPLIER_LEGAL_NAME)
 
 
