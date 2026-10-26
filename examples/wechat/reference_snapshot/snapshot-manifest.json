@@ -1,0 +1,12 @@
+{
+  "wtapi_events.py": {
+    "source_sha256": "4b52b5b4617ebaaa15c0d0718e0e43383bd94da25ead31689d3515dc18011351",
+    "snapshot_sha256": "001c47fa63fd094c7b9e16df68f372b47e1b8598a24b9588cfa224ea98de4830",
+    "functions_and_classes": 17
+  },
+  "video_knowledge/events.py": {
+    "source_sha256": "6f59b15ab73e50ff025cf18ed76ea4fffde372d5e308d8a37a021b3a5e20b528",
+    "snapshot_sha256": "533767f8b418e503258ace6752eec0b8391cb89a2c4062a04cc9a562e60101a6",
+    "functions_and_classes": 10
+  }
+}
