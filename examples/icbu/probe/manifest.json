@@ -1,0 +1,62 @@
+{
+  "pwa-core.js": {
+    "source_sha256": "b8a577c4f8dcc5d0d54aca456ba6266cacb7883fcf9e8d58f7befa666efdf546",
+    "sanitized_sha256": "76c5613a58f87b022910c5f398e953272a675953ba6191a51edb2ececeb105e2",
+    "production_match_claimed": false
+  },
+  "pwa-dom.js": {
+    "source_sha256": "3f440c3c19b145e30fb323f68f355b80a4e54b206d099a24d573fcd5606831b2",
+    "sanitized_sha256": "ba0e6b293edf320b57a426d37bbbbbdfe742bbc5cdd6a39ef19361896790a556",
+    "production_match_claimed": false
+  },
+  "pwa-capture.js": {
+    "source_sha256": "243f43b35d47b9f7ef5114a967f6c671b03fe0b937d0d0d703c60fefe50ac8cb",
+    "sanitized_sha256": "5b9175cd5817eb354b2672959da35dabf01a4fb64f1fdb9f7d267ad0ffaadbde",
+    "production_match_claimed": false
+  },
+  "pwa-fresh-gate.js": {
+    "source_sha256": "c94acc0f6d252a6a112cb3c2aefd355feb1a247225d430230e9922254361c698",
+    "sanitized_sha256": "061ba08b70cc4919d20eb0aeb9862248f8bc0d5cce0e75ebb4227771f87f8fe0",
+    "production_match_claimed": false
+  },
+  "pwa-entry.js": {
+    "source_sha256": "98afb8c61749e92c0e857420fca9a2deb6d4d0950f9fb33769a6a58ab71e1758",
+    "sanitized_sha256": "607176c3165ad5583033481ada26c9661325b4d1ac66be69b2c57f4eee3e9f5a",
+    "production_match_claimed": false
+  },
+  "icbu-operations-client.js": {
+    "source_sha256": "fa1afd60cd7bb362d4c98252b6d4bbdc0ee44bec3fff8ae02159859406438ff4",
+    "sanitized_sha256": "eb6e7163c59bde3b5bdb272e46f20e826ecff4d231316dcfeb378acd5e196488",
+    "production_match_claimed": false
+  },
+  "test-entry-status.js": {
+    "source_sha256": "247a35b043e35630a6ef21d60e913ac6332aa52d22f618c8e83cd70493fdbac7",
+    "sanitized_sha256": "0fa3ff170273205ba8fe9fbcc64dd594ad2f27eaea2b32ecec58c7c06388fa28",
+    "production_match_claimed": false
+  },
+  "test-human-pause.js": {
+    "source_sha256": "33e4824855b650db6f9d82f7a19793f53e5e21233054afd177178d1a6aabfc58",
+    "sanitized_sha256": "63bc65f92c88ce93b3155e48a9180aa165cb5574673709fd51078e8989dbcc23",
+    "production_match_claimed": false
+  },
+  "test-human-browser.js": {
+    "source_sha256": "1e82189e6aa66b6afe06e347031b5dd9acdc3bc6ae2a8307a6be68cf2040379b",
+    "sanitized_sha256": "098f26d37e32f6ed1bfb8c8eb62d761e523e5102c2df2cb03f76530584a28329",
+    "production_match_claimed": false
+  },
+  "test-pwa.js": {
+    "source_sha256": "6686b6b936e770de879fdfede0c5602f3d8c2238e8d7743974cb2c1b4788144d",
+    "sanitized_sha256": "75809d7dbdbcac5345466d3efba5858c6ae6c7c42d60a22b91dca54dc14aad24",
+    "production_match_claimed": false
+  },
+  "test-human-node.js": {
+    "source": "new_synthetic_node_fixture",
+    "sanitized_sha256": "6dfbbd4cdc16fc3e260ae3039165d50a52eb8b21ec2686e107405182d075bbb7",
+    "production_match_claimed": false
+  },
+  "test-pwa-node.js": {
+    "source": "new_synthetic_node_fixture",
+    "sanitized_sha256": "ac244ae3f5a5aec98537fe74ea5c40029e9b5b2972f758223edd31d1035bc92c",
+    "production_match_claimed": false
+  }
+}
