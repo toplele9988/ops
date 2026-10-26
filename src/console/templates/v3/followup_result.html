@@ -1,0 +1,10 @@
+{% extends 'v3/base3.html' %}
+{% block title %}跟进备注未保存{% endblock %}
+{% block subtitle %}请保留输入后返回会话继续处理。{% endblock %}
+{% block content %}
+<section class="card"><div class="card-body">
+  <h2 class="h3">备注未保存</h2><p role="alert">{{ error }}</p>
+  {% if content %}<label for="unsaved-content">未保存的内容</label><textarea id="unsaved-content" class="form-control" rows="6" readonly>{{ content }}</textarea>{% endif %}
+  {% if key and key|length == 64 %}<a class="btn btn-primary mt-3" href="/v3/workbench?conversation={{ key | urlencode }}">返回会话</a>{% else %}<a class="btn btn-primary mt-3" href="/v3/workbench">返回工作台</a>{% endif %}
+</div></section>
+{% endblock %}

@@ -1,0 +1,104 @@
+{% extends 'v3/base3.html' %}
+{% block title %}客户运营工作台{% endblock %}
+{% block subtitle %}汇集已授权的渠道会话，逐步连接客户、订单与知识。{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/v3/unified_workbench.css">{% endblock %}
+{% block content %}
+{% set names = {'wechat':'微信','alibaba':'阿里国际站','whatsapp':'WhatsApp'} %}
+{% set labels = {'ok':'档案可读','partial':'部分可读','unavailable':'暂不可用','forbidden':'未授权'} %}
+<section class="uw-intro" aria-labelledby="uw-heading">
+  <div><span class="uw-eyebrow">LECHU · OPERATIONS</span><h2 id="uw-heading">把客户沟通汇聚到一处</h2><p>按渠道和账号查看老板已授权的历史会话。客户资料、附件、订单与发送功能仍在接入。</p></div>
+  <div class="uw-intro-side"><span class="uw-dot" aria-hidden="true"></span><div><strong>当前数据范围</strong><small>仅显示本次授权范围内的会话</small></div></div>
+</section>
+<div class="uw-grid">
+  <aside class="uw-card uw-channels" aria-labelledby="uw-channels-title">
+    <div class="uw-panel-head"><div><span class="uw-kicker">CHANNELS</span><h2 id="uw-channels-title">渠道</h2></div></div>
+    <div class="uw-channel-list">
+      {% for key in ['wechat','alibaba','whatsapp'] %}
+      {% set ch = workbench['channels'].get(key, {}) %}{% set state = ch.get('status','unavailable') %}
+      <div class="uw-channel"><span class="uw-channel-icon uw-{{ key }}" aria-hidden="true">{{ {'wechat':'微','alibaba':'阿','whatsapp':'W'}[key] }}</span><span class="uw-channel-name">{{ names[key] }}</span><span class="uw-status uw-{{ state if state in ['ok','partial','unavailable','forbidden'] else 'unavailable' }}">{{ labels.get(state,'状态未知') }}</span></div>
+      {% endfor %}
+      <div class="uw-channel uw-muted"><span class="uw-channel-icon">站</span><span class="uw-channel-name">独立站</span><span class="uw-status">未接入</span></div>
+      <div class="uw-channel uw-muted"><span class="uw-channel-icon">邮</span><span class="uw-channel-name">邮箱</span><span class="uw-status">未接入</span></div>
+    </div>
+    <p class="uw-hint">{% if workbench.get('login_mode') == 'shared_proxy' %}当前为共享账号登录，无法区分个人操作。{% endif %}阿里显示已授权历史，TM 实时监听未验收；微信只显示已登记授权群；WhatsApp 目前仅验证过自测。状态不代表实时收发正常。</p>
+    <div class="uw-divider"></div><h3 class="uw-small-heading">业务入口</h3>
+    <nav class="uw-links" aria-label="业务入口"><a href="/v3/icbu-drafts">阿里草稿审核 <span aria-hidden="true">↗</span></a><a href="/v3/suppliers">供应商资料 <span aria-hidden="true">↗</span></a><a href="/v3/library">知识资料库 <span aria-hidden="true">↗</span></a><a href="/v3/batches">报价批次 <span aria-hidden="true">↗</span></a></nav>
+  </aside>
+  <section class="uw-card uw-conversations" aria-labelledby="uw-list-title">
+    <div class="uw-panel-head"><div><span class="uw-kicker">INBOX</span><h2 id="uw-list-title">会话索引</h2><p>按最近消息时间排列 · 本页 {{ workbench['items']|length }} 条</p></div><span class="uw-count">{{ workbench['items']|length }}</span></div>
+    <form class="uw-filter" method="get" action="/v3/workbench" role="search" aria-label="查找会话">
+      <label for="uw-search">查找客户、账号或会话 ID</label>
+      <div class="uw-filter-row"><input id="uw-search" type="search" name="q" maxlength="128" value="{{ workbench.get('filter_search','') }}" placeholder="输入客户名、账号或会话 ID">
+      <label class="uw-sr-only" for="uw-channel">渠道</label><select id="uw-channel" name="channel"><option value="">全部渠道</option>{% for ch in ['wechat','alibaba','whatsapp'] %}<option value="{{ ch }}" {% if workbench.get('filter_channel') == ch %}selected{% endif %}>{{ names[ch] }}</option>{% endfor %}</select><button type="submit">查找</button></div>
+      <p>搜索会话名称、账号和 ID；不搜索消息正文。{% if workbench.get('filter_search') or workbench.get('filter_channel') %} <a href="/v3/workbench">清除筛选</a>{% endif %}</p>
+    </form>
+    <div class="uw-list" role="list">
+      {% for item in workbench['items'] %}
+      <article class="uw-conversation" role="listitem"><div class="uw-avatar" aria-hidden="true">{{ {'wechat':'微','alibaba':'阿','whatsapp':'W'}.get(item.channel,'·') }}</div><div class="uw-conversation-main"><div class="uw-row"><strong>{{ item.display_name or item.conversation_id }}</strong><time>{{ '入库时间' if item.get('latest_time_basis') == 'received' else '消息时间' }} {{ item.get('latest_at_display') or ('UTC 秒数 ' ~ item.latest_at) }}</time></div><p class="uw-id">{{ names.get(item.channel,'未知渠道') }} · {{ item.account }}{% if item.display_name %} · 会话 {{ item.conversation_id }}{% endif %}</p>{% if workbench.get('detail_enabled', false) and item.get('key') %}<a class="uw-open" href="{{ item.detail_url }}">查看消息 →</a>{% endif %}<div class="uw-meta"><span>{{ item.message_count }} 条消息</span><span>{% if workbench.get('detail_enabled', false) and item.get('key') %}可查看详情{% else %}正文待接入{% endif %}</span></div></div></article>
+      {% else %}<div class="uw-empty"><div class="uw-empty-icon" aria-hidden="true">◎</div><strong>{% if workbench.get('filter_search') or workbench.get('filter_channel') %}没有找到匹配的会话{% else %}当前范围暂无可显示的会话{% endif %}</strong><p>{% if workbench.get('filter_search') or workbench.get('filter_channel') %}试试其他客户名、账号或渠道。{% else %}请查看左侧渠道状态。未授权、暂不可用或尚未接入的数据不会出现在列表中。{% endif %}</p></div>{% endfor %}
+    </div>
+    <div class="uw-list-footer"><span>{% if not workbench.get('pagination_complete', true) %}部分来源暂不可用，无法继续翻页。{% else %}仅展示当前页，更新可能改变排序。{% endif %}</span>{% if workbench['next_cursor'] %}<a class="uw-next" href="{{ workbench['next_url'] }}">下一页 <span aria-hidden="true">→</span></a>{% endif %}</div>
+  </section>
+  {% set selected = workbench.get('selected') if workbench.get('detail_enabled', false) else none %}
+  <aside class="uw-card uw-detail" aria-labelledby="uw-detail-title"><div class="uw-panel-head"><div><span class="uw-kicker">DETAIL</span><h2 id="uw-detail-title">会话与操作</h2></div><span class="uw-coming">{% if selected %}消息{% else %}选择会话{% endif %}</span></div>
+  {% if selected %}
+    {% if selected.status == 'ok' %}<div class="uw-detail-header"><strong>{{ selected.display_name or selected.conversation_id }}</strong><span>{{ names.get(selected.channel,'未知渠道') }} · {{ selected.account }}{% if selected.display_name %} · 会话 {{ selected.conversation_id }}{% endif %}</span></div>{% endif %}
+    {% if selected.status == 'ok' %}
+      <form class="uw-message-search" method="get" action="/v3/workbench" role="search" aria-label="搜索当前会话消息">
+        <input type="hidden" name="conversation" value="{{ selected.key }}">
+        {% if request.query_params.get('cursor') %}<input type="hidden" name="cursor" value="{{ request.query_params.get('cursor') }}">{% endif %}
+        {% if workbench.get('filter_channel') %}<input type="hidden" name="channel" value="{{ workbench.filter_channel }}">{% endif %}
+        {% if workbench.get('filter_search') %}<input type="hidden" name="q" value="{{ workbench.filter_search }}">{% endif %}
+        <label for="uw-message-query">搜索当前会话已归档文本</label>
+        <div class="uw-message-search-row"><input id="uw-message-query" type="search" name="message_q" value="{{ selected.search_query }}" maxlength="128" placeholder="例如产品型号或报价"><button type="submit">搜索</button></div>
+        {% if selected.search_query %}<p>找到 {{ selected.matched_count }} 条消息 · <a href="{{ selected.clear_search_url }}">清除搜索</a></p>{% else %}<p>仅搜索当前会话已归档的可读取文本；超长消息只搜索前 65536 个字符。</p>{% endif %}
+      </form>
+      <div class="uw-messages" aria-label="会话消息">{% for message in selected['items'] %}<article class="uw-message {% if message.direction in ['outbound', 'seller'] %}uw-message-out{% endif %}"><div class="uw-message-meta"><strong>{{ {'inbound':'对方','outbound':'我方','buyer':'买家','seller':'我方','system':'系统'}.get(message.direction,'方向待确认') }}</strong><time>{{ '入库时间' if message.get('time_basis') == 'received' else '消息时间' }} {{ message.get('at_display') or ('UTC 秒数 ' ~ message.at) }}</time></div><p>{{ message.text if message.text else '此消息暂无可展示的文本' }}{% if message.get('truncated') %}（正文已截断）{% endif %}</p></article>{% else %}<p class="uw-hint">{% if selected.search_query %}当前会话没有找到匹配消息，请尝试其他关键词。{% else %}当前范围没有可展示的消息。{% endif %}</p>{% endfor %}</div>
+      {% if selected.next_cursor and selected.get('key') %}<a class="uw-next" href="{{ selected.next_url }}">查看更早的消息 →</a>{% endif %}{% if request.query_params.get('message_cursor') %}<a class="uw-next uw-return-latest" href="{{ selected.latest_url }}">返回最新消息</a>{% endif %}
+    {% elif selected.status == 'forbidden' %}<p class="uw-error" role="status">当前账号没有查看此会话的权限。</p>
+    {% elif selected.status == 'unavailable' %}<p class="uw-error" role="status">此会话暂不可用，可能已撤销授权。</p>
+    {% else %}<p class="uw-error" role="status">无法读取此会话，请稍后重试。</p>{% endif %}
+  {% else %}
+    <div class="uw-detail-empty"><div class="uw-detail-icon" aria-hidden="true">✦</div><h3>选择一个会话</h3><p>选择左侧已授权会话后查看消息。客户资料、附件和订单关联正在接入。</p></div>
+  {% endif %}
+  {% if workbench.get('demo_order') %}{% include 'v3/demo_order_fragment.html' %}{% endif %}
+  {% if selected and selected.status == 'ok' %}
+  <section class="uw-followup" aria-labelledby="uw-followup-title">
+    <h3 id="uw-followup-title">内部跟进</h3>
+    <p class="uw-followup-help">备注与状态由两位同事共享，只保存在本系统，不会发送给客户。</p>
+    {% set f = selected.get('followup', {}) %}
+    {% if f.available %}
+    <form action="/v3/workbench/note{% if request.url.query %}?{{ request.url.query }}{% endif %}" method="post" class="uw-followup-form">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="conversation" value="{{ selected.key }}"><input type="hidden" name="version" value="{{ f.version }}">
+      <label for="followup-status">跟进状态</label><select id="followup-status" name="status">
+        {% for value,label in [('pending','待跟进'),('following','跟进中'),('waiting_customer','等待客户'),('waiting_supplier','等待供应商'),('done','已完成')] %}<option value="{{ value }}"{% if f.status==value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      <label for="followup-content">会话备注</label><textarea id="followup-content" name="content" rows="4" maxlength="512" placeholder="记录需求、待办或下次跟进内容">{{ f.content }}</textarea>
+      <div class="uw-followup-actions"><button type="submit">保存跟进</button><span>最多 512 个字符</span></div>
+      {% if f.exists %}<p class="uw-followup-help">最近更新：{{ f.updated_at_display }} · {{ f.updated_by }}</p>{% else %}<p class="uw-followup-help">尚未创建跟进记录。</p>{% endif %}
+    </form>
+    {% else %}<p class="uw-followup-error" role="status">暂时无法读取跟进记录，请稍后刷新。</p>{% endif %}
+  </section>
+  {% endif %}
+  {% if selected and selected.status == 'ok' and selected.channel == 'alibaba' %}
+  <section class="uw-drafts" aria-labelledby="uw-drafts-title">
+    <h3 id="uw-drafts-title">当前会话的阿里草稿</h3>
+    <p class="uw-draft-note">聊天记录为历史归档；下方仅列出同一账号、同一会话的新买家消息草稿任务。</p>
+    {% set drafts = selected.get('drafts', {}) %}
+    {% if drafts.status == 'ok' %}
+      {% for draft in drafts['items'] %}
+      <article class="uw-draft-item">
+        <div class="uw-draft-meta"><strong>{{ {'draft_queued':'等待生成','draft_processing':'生成中','draft_waiting':'等待重试','draft_hold':'已暂停','draft_ready':'草稿待审核','failed':'生成失败','inconsistent':'状态待核实','unknown':'状态未知'}.get(draft.status, '状态未知') }}</strong><time>{{ draft.created_at_display }}</time></div>
+        <span class="uw-draft-source">新买家消息 · {{ selected.account }}</span>
+        {% if draft.draft %}<p>{{ draft.draft }}{% if draft.truncated %}（内容已截断）{% endif %}</p>{% elif draft.status == 'draft_ready' %}<p>草稿内容暂不可用，请打开详情核查。</p>{% endif %}
+        <a href="/v3/icbu-drafts/{{ draft.id }}">查看任务详情 →</a>
+      </article>
+      {% else %}<p class="uw-draft-empty">当前会话暂无精确匹配的实时草稿任务。</p>{% endfor %}
+      {% if drafts.has_more %}<p class="uw-draft-note">这里只显示最近 20 条，请在草稿审核台查看更多。</p>{% endif %}
+    {% elif drafts.status == 'not_supported' %}<p class="uw-draft-empty">该账号的实时草稿关联尚未接入。</p>
+    {% else %}<p class="uw-draft-unavailable" role="status">暂时无法读取草稿状态，请稍后再试。</p>{% endif %}
+  </section>
+  {% endif %}
+  <div class="uw-feature-list"><div><span>客户与订单关联</span><strong>待接入</strong></div><div><span>附件与资料</span><strong>待接入</strong></div><div><span>回复与发送</span><strong>待接入</strong></div></div><button class="uw-disabled" type="button" disabled>发送消息 · 尚未接入</button><p class="uw-hint">阿里已有草稿审核入口；本页目前不会向任何渠道发送消息。</p></aside>
+</div>
+{% endblock %}

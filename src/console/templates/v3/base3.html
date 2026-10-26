@@ -1,0 +1,86 @@
+{% set session = request.state.session | default(none) %}
+{% set proxy_trusted = request.state.proxy_trusted | default(false) %}
+{% set signed_in = proxy_trusted or (session is not none and session.authenticated) %}
+{% set admin_area = nav | default('') in ['admin', 'overview'] %}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}经营总览{% endblock %} · 外贸 AI 运营控制台</title>
+  <link rel="stylesheet" href="/static/vendor/tabler.min.css">
+  <link rel="stylesheet" href="/static/v3/v3.css">
+  <link rel="stylesheet" href="/static/v3/v3_B.css">
+  <link rel="stylesheet" href="/static/v3/v3_C.css">
+  <script src="/static/vendor/tabler.min.js" defer></script>
+  <script src="/static/vendor/echarts.min.js" defer></script>
+  <script src="/static/v3/v3.js" defer></script>
+  <link rel="stylesheet" href="/static/v3/ops_shell.css">
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="v3-console">
+  <a class="v3-skip-link" href="#main">跳到正文</a>
+  <div class="page">
+    {% if signed_in %}
+    <aside class="navbar navbar-vertical navbar-expand-lg v3-sidebar" aria-label="控制台导航">
+      <div class="container-fluid">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#v3-sidebar-menu" aria-controls="v3-sidebar-menu" aria-expanded="false" aria-label="展开或收起主导航">
+          <span class="navbar-toggler-icon" aria-hidden="true"></span>
+        </button>
+        <a class="navbar-brand v3-brand" href="{{ '/v3/admin' if admin_area else '/v3/workbench' }}"><span class="ops-brand-mark" aria-hidden="true">L</span><span><strong>乐初</strong><small>{{ '系统管理' if admin_area else '业务运营中心' }}</small></span></a>
+        <div class="collapse navbar-collapse" id="v3-sidebar-menu">
+          <nav aria-label="主导航">
+            {% set sections = [
+              ('日常工作', [('workbench', '客户工作台', '/v3/workbench', '◉'), ('inquiries', '询价雷达', '/v3/inquiries', '⌕'), ('icbu_drafts', '阿里草稿审核', '/v3/icbu-drafts', '✎'), ('batches', '报价批次', '/v3/batches', '▤')]),
+              ('业务资料', [('products', '产品库', '/v3/products', '◇'), ('strobes', '频闪灯', '/strobes', '✦'), ('library', '知识资料库', '/v3/library', '▧'), ('suppliers', '供应商', '/v3/suppliers', '◎')])
+            ] %}
+            {% if admin_area %}{% set sections = [('系统管理', [('admin', '管理首页', '/v3/admin', '◉'), ('overview', '运行与数据状态', '/v3/', '▦')]), ('账号', [('account', '账号设置', '/access/account', '◎')])] %}{% endif %}
+            {% for group, entries in sections %}
+            <p class="ops-nav-label">{{ group }}</p>
+            <ul class="navbar-nav">
+              {% for key, label, path, icon in entries %}
+              <li class="nav-item{% if nav | default('') == key %} active{% endif %}">
+                <a class="nav-link" href="{{ path }}"{% if nav | default('') == key %} aria-current="page"{% endif %}>
+                  <span class="ops-nav-icon" aria-hidden="true">{{ icon }}</span><span class="nav-link-title">{{ label }}</span>
+                </a>
+              </li>
+              {% endfor %}
+            </ul>
+            {% endfor %}
+          </nav>
+          <div class="v3-sidebar-footer">
+            <a class="btn btn-outline-secondary w-100" href="{{ '/v3/workbench' if admin_area else '/v3/admin' }}">{{ '返回业务工作台' if admin_area else '系统管理' }}</a>
+            {% if not proxy_trusted %}
+            <form class="mt-2" action="/logout" method="post">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="btn btn-outline-secondary w-100" type="submit">退出登录</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </aside>
+    {% endif %}
+    <div class="page-wrapper">
+      <header class="page-header">
+        <div class="container-xl">
+          <div class="d-flex align-items-center justify-content-between gap-3">
+            <div>
+              <h1 class="page-title">{{ self.title() }}</h1>
+              <p class="text-secondary mb-0 mt-2">{% block subtitle %}业务数据与服务当前状态。{% endblock %}</p>
+            </div>
+            <span class="ops-header-label">{{ '系统管理' if admin_area else '业务工作台' }}</span>
+          </div>
+        </div>
+      </header>
+      <main id="main" class="page-body" tabindex="-1">
+        <div class="container-xl">{% block content %}{% endblock %}</div>
+      </main>
+      <footer class="footer footer-transparent">
+        <div class="container-xl text-secondary">外贸 AI 运营控制台</div>
+      </footer>
+    </div>
+  </div>
+</body>
+</html>

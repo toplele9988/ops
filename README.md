@@ -10,6 +10,7 @@
 - `tests/cpq/`：计算、页面契约、导出和安全约束测试。
 - `src/console/conversation_notes.py`、`tests/workbench/`：会话跟进状态与内部备注的存储逻辑及合成数据测试。仓库版本调整了数据库路径配置，与线上文件并非逐字相同；页面与渠道适配器仍需整合。
 - `src/console/password_candidate/`：账号页面及兼容旧会话的实验性源码，使用合成账号测试。公开版本移除了自动创建默认账户的逻辑，与线上版本不同；缺少其他运行组件，不能直接部署。
+- `src/console/owner_inbox.py`、`src/console/v3_owner_inbox.py` 及对应模板：多渠道会话查询、草稿关联和内部跟进页面的脱敏候选。来源适配器与应用主体尚未包含；真实草稿匹配需要显式配置账号及协议标识，未配置时不会匹配，不能直接用于生产。
 - `deploy/`、`tasks/`：早期部署补丁与项目记录，保留用于追溯；不能代替对现网部署状态的核验。
 
 这些模块来自已有项目历史。本仓库当前并不包含运营平台的全部现网源码，也不是一键部署包。继续整合时应先对照运行版本、补充依赖与测试，不能直接覆盖线上文件。
@@ -33,6 +34,7 @@ AI 可以辅助整理客户需求、检索产品信息、生成回复和报价�
 ```sh
 python -m pip install -r requirements-workbench-test.txt
 PYTHONPATH=src python -m unittest discover -s tests/workbench -p 'test_*.py'
+PYTHONPATH=src python -m unittest discover -s tests/workbench -p 'inbox_fixtures.py'
 ```
 
 测试只使用临时 SQLite 数据库，不需要线上配置。CPQ 测试可选择虚构数据库或明确指定已授权的测试数据库，详见 [CPQ 测试说明](docs/cpq-testing.md)。
