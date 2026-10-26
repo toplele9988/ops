@@ -35,4 +35,4 @@ python -m pip install -r requirements-workbench-test.txt
 PYTHONPATH=src python -m unittest discover -s tests/workbench -p 'test_*.py'
 ```
 
-测试只使用临时 SQLite 数据库，不需要线上配置。已有 CPQ 测试需要额外依赖和 Node.js，依赖清单仍待整理。
+测试只使用临时 SQLite 数据库，不需要线上配置。CPQ 测试可选择虚构数据库或明确指定已授权的测试数据库，详见 [CPQ 测试说明](docs/cpq-testing.md)。

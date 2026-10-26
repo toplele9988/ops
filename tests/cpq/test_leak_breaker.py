@@ -162,7 +162,7 @@ def test_scan_zip_filenames_and_exif():
     # Non-image members and directory names must also be inspected.
     for entry in (('supplier_id.txt', b'plain text'), ('RMB/', b'')):
         assert scan_zip_bytes(_zip([entry]), CTX)
-    chinese_supplier = '广州凤舞灯光有限公司'
+    chinese_supplier = '测试灯光有限公司'
     chinese_context = LeakContext((chinese_supplier,), (), ())
     examples = (
         (315, CTX.supplier_names[0], CTX),
@@ -190,10 +190,11 @@ def test_breaker_has_no_bypass():
         assert forbidden not in source
 
 
-def test_load_leak_context_real_snapshot(catalog_copy, work_db):
+def test_load_leak_context_synthetic_snapshot(catalog_copy, work_db):
     catalog_path = Path(catalog_copy)
     work_path = Path(work_db)
-    supplier = '广州凤舞灯光有限公司'
+    from console.strobe.repository import SUPPLIER_LEGAL_NAME
+    supplier = SUPPLIER_LEGAL_NAME
     # Only this per-test work database is modified. The catalog is read only.
     with closing(sqlite3.connect(work_path)) as work:
         with work:
@@ -216,13 +217,13 @@ def test_load_leak_context_real_snapshot(catalog_copy, work_db):
             ORDER BY e.equipment_id, o.offer_id
             LIMIT 1
         ''', ('strobe', supplier)).fetchone()
-    assert row is not None, 'The real snapshot needs a strobe offer with a known cost'
+    assert row is not None, 'The synthetic snapshot needs a strobe offer with a known cost'
     model_id, raw_fen, flight_fen = row
     catalog_before = sha256(catalog_path.read_bytes()).digest()
     work_before = sha256(work_path.read_bytes()).digest()
     context = load_leak_context(catalog_path, work_path, [model_id])
     assert supplier in context.supplier_names
-    assert '广州凤舞灯光' in context.supplier_names
+    assert supplier in context.supplier_names
     assert len(context.factory_models) >= 30
     assert all(len(model) >= 4 for model in context.factory_models)
     assert raw_fen / 100 in context.cost_values

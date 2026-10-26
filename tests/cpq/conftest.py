@@ -7,6 +7,16 @@ from pathlib import Path
 from types import SimpleNamespace
 import os
 import sqlite3
+import sys
+
+TEST_MODE = os.environ.get("CPQ_TEST_MODE")
+PDF_MODE = os.environ.get("CPQ_TEST_PDF", "real")
+if TEST_MODE not in ("synthetic", "existing"):
+    raise RuntimeError("Set CPQ_TEST_MODE=synthetic or CPQ_TEST_MODE=existing explicitly")
+if PDF_MODE not in ("real", "skip"):
+    raise RuntimeError("Set CPQ_TEST_PDF to real or skip")
+if PDF_MODE == "skip":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "support"))
 import pytest
 from PIL import Image
 from starlette.applications import Starlette
@@ -16,7 +26,17 @@ from console.cpq.store import CPQStore
 from console.cpq.workdb import open_work,ensure_schema
 from console.routes.strobe_routes import Settings,build_routes
 from console.security.media import MediaAsset,make_asset_uid
-from console.strobe.repository import STROBES_SQL,SUPPLIER_LEGAL_NAME
+from console.strobe.repository import STROBES_SQL
+import console.strobe.repository as _strobe_repository
+import console.cpq.store as _cpq_store
+
+# Synthetic tests only: isolate supplier identity without changing production code.
+if TEST_MODE == 'synthetic' or os.environ.get('CPQ_TEST_FIXTURE_SUPPLIER') == '1':
+    SUPPLIER_LEGAL_NAME = 'Synthetic Fixture Supplier'
+    _strobe_repository.SUPPLIER_LEGAL_NAME = SUPPLIER_LEGAL_NAME
+    _cpq_store.SUPPLIER_LEGAL_NAME = SUPPLIER_LEGAL_NAME
+else:
+    SUPPLIER_LEGAL_NAME = _strobe_repository.SUPPLIER_LEGAL_NAME
 
 
 @pytest.fixture
@@ -38,7 +58,13 @@ def backup(source,destination):
 
 @pytest.fixture(scope='session')
 def snapshot_db(tmp_path_factory):
-    return backup(os.environ.get('XL_DB_PATH','catalog.sqlite3'),tmp_path_factory.mktemp('strobe-snapshot')/'catalog.sqlite3')
+    if TEST_MODE == 'existing':
+        source = os.environ.get('XL_DB_PATH')
+        if not source or not os.environ.get('MEDIA_ROOT'):
+            raise RuntimeError('existing mode requires XL_DB_PATH and MEDIA_ROOT')
+        return backup(source,tmp_path_factory.mktemp('cpq-explicit-existing')/'catalog.sqlite3')
+    from tests.cpq.fixture_catalog import create_catalog
+    return create_catalog(tmp_path_factory.mktemp('synthetic-cpq-catalog'),SUPPLIER_LEGAL_NAME)
 
 
 @pytest.fixture
@@ -58,8 +84,9 @@ def work_db(tmp_path):
 
 
 @pytest.fixture
-def settings(catalog_copy,work_db,tmp_path):
-    return Settings(catalog_copy,Path(os.environ.get('MEDIA_ROOT','/var/lib/imgw/media')),tmp_path/'media-cache',work_db,'test-secret-not-for-prod',True)
+def settings(catalog_copy,work_db,tmp_path,snapshot_db):
+    media_root = snapshot_db.parent/'media' if TEST_MODE == 'synthetic' else Path(os.environ['MEDIA_ROOT'])
+    return Settings(catalog_copy,media_root,tmp_path/'media-cache',work_db,'test-secret-not-for-prod',True)
 
 
 @pytest.fixture
@@ -67,6 +94,10 @@ def app(settings):
     routes = build_routes(settings)
     result = Starlette(routes=routes)
     result.state.strobe_api = routes[0].endpoint.__self__
+    if TEST_MODE == 'synthetic':
+        from jinja2 import ChoiceLoader, FileSystemLoader
+        templates = Path(__file__).resolve().parents[1]/'support'/'templates'
+        result.state.strobe_api.templates.loader = ChoiceLoader([FileSystemLoader(templates), result.state.strobe_api.templates.loader])
     result.state.strobe_repository = result.state.strobe_api.repository
     result.state.cpq_service = next(r for r in routes if r.name=='cpq_context').endpoint.__self__.service
     return result
@@ -171,3 +202,13 @@ def freight_heavy_payload(seeded):
     payload['shipping']['lane_id'] = 'TEST-FAR-DDP'
     payload['lines'][0]['qty'] = 2
     return payload
+
+
+def pytest_collection_modifyitems(items):
+    pdf_modules = {'test_exports.py', 'test_export_leaks.py', 'test_letter.py'}
+    asset_tests = {'test_no_external_urls_in_templates_and_static', 'test_rendered_page_has_no_external_refs'}
+    for item in items:
+        if PDF_MODE == 'skip' and item.path.name in pdf_modules:
+            item.add_marker(pytest.mark.skip(reason='real PDF renderer is not available; import-only double'))
+        if TEST_MODE == 'synthetic' and item.name in asset_tests:
+            item.add_marker(pytest.mark.skip(reason='actual vendor assets are not included in synthetic template'))
