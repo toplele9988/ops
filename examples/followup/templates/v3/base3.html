@@ -1,0 +1,76 @@
+{% set session = request.state.session | default(none) %}
+{% set proxy_trusted = request.state.proxy_trusted | default(false) %}
+{% set signed_in = proxy_trusted or (session is not none and session.authenticated) %}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}经营总览{% endblock %} · 外贸 AI 运营控制台</title>
+  <link rel="stylesheet" href="/static/vendor/tabler.min.css">
+  <link rel="stylesheet" href="/static/v3/v3.css">
+  <link rel="stylesheet" href="/static/v3/v3_B.css">
+  <link rel="stylesheet" href="/static/v3/v3_C.css">
+  <script src="/static/vendor/tabler.min.js" defer></script>
+  <script src="/static/vendor/echarts.min.js" defer></script>
+  <script src="/static/v3/v3.js" defer></script>
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="v3-console">
+  <a class="v3-skip-link" href="#main">跳到正文</a>
+  <div class="page">
+    {% if signed_in %}
+    <aside class="navbar navbar-vertical navbar-expand-lg v3-sidebar" aria-label="控制台导航">
+      <div class="container-fluid">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#v3-sidebar-menu" aria-controls="v3-sidebar-menu" aria-expanded="false" aria-label="展开或收起主导航">
+          <span class="navbar-toggler-icon" aria-hidden="true"></span>
+        </button>
+        <a class="navbar-brand v3-brand" href="/v3/">外贸 AI 运营控制台</a>
+        <div class="collapse navbar-collapse" id="v3-sidebar-menu">
+          <nav aria-label="主导航">
+            <ul class="navbar-nav">
+              {% for key, label, path in [('workbench', '客户工作台', '/v3/workbench'), ('overview', '总览', '/v3/'), ('products', '产品库', '/v3/products'), ('strobes', '频闪灯', '/strobes'), ('library', '资料库', '/v3/library'), ('suppliers', '供应商', '/v3/suppliers'), ('inquiries', '询价雷达', '/v3/inquiries'), ('icbu_drafts', '阿里草稿审核', '/v3/icbu-drafts'), ('batches', '批次审批', '/v3/batches')] %}
+              <li class="nav-item{% if nav | default('') == key %} active{% endif %}">
+                <a class="nav-link" href="{{ path }}"{% if nav | default('') == key %} aria-current="page"{% endif %}>
+                  <span class="nav-link-title">{{ label }}</span>
+                </a>
+              </li>
+              {% endfor %}
+            </ul>
+          </nav>
+          <div class="v3-sidebar-footer">
+            <a class="btn btn-outline-secondary w-100" href="/">返回 2.0</a>
+            {% if not proxy_trusted %}
+            <form class="mt-2" action="/logout" method="post">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="btn btn-outline-secondary w-100" type="submit">退出登录</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </aside>
+    {% endif %}
+    <div class="page-wrapper">
+      <header class="page-header">
+        <div class="container-xl">
+          <div class="d-flex align-items-center justify-content-between gap-3">
+            <div>
+              <h1 class="page-title">{{ self.title() }}</h1>
+              <p class="text-secondary mb-0 mt-2">{% block subtitle %}业务数据与服务当前状态。{% endblock %}</p>
+            </div>
+            <span class="badge bg-blue-lt" aria-label="界面版本 3.0">3.0</span>
+          </div>
+        </div>
+      </header>
+      <main id="main" class="page-body" tabindex="-1">
+        <div class="container-xl">{% block content %}{% endblock %}</div>
+      </main>
+      <footer class="footer footer-transparent">
+        <div class="container-xl text-secondary">外贸 AI 运营控制台</div>
+      </footer>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,29 @@
+{% extends 'v3/base3.html' %}
+{% block title %}客户跟进{% endblock %}
+{% block subtitle %}查看已记录的客户跟进，继续处理当前会话。{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/v3/unified_workbench.css"><link rel="stylesheet" href="/static/v3/followups.css?v=1">{% endblock %}
+{% block content %}
+<div class="fu-page">
+  <section class="uw-intro fu-intro"><div><span class="uw-eyebrow">FOLLOW-UPS</span><h2>客户跟进</h2><p>查看团队已记录的跟进情况，按状态找到需要处理的会话。</p><a class="uw-open fu-back" href="/v3/workbench">← 返回客户工作台</a></div></section>
+  <section class="uw-card fu-panel" aria-labelledby="fu-heading">
+    <div class="fu-heading"><div><h2 id="fu-heading">跟进记录</h2><p>只显示已保存状态或备注的会话。</p></div></div>
+    <form class="fu-filter" action="/v3/followups" method="get">
+      <div class="fu-filter-field"><label for="followup-status">跟进状态</label><select id="followup-status" name="status"><option value="all" {% if page.status_filter == 'all' %}selected{% endif %}>全部已记录</option>{% for key,label in states.items() %}<option value="{{ key }}" {% if page.status_filter == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      <button class="fu-button" type="submit">筛选记录</button>
+    </form>
+    <div class="fu-body">
+      {% if page.partial %}<div class="fu-notice" role="status">部分会话来源、授权或跟进状态发生变化，相关记录暂不显示。来源恢复或记录更新后，请<a href="/v3/followups?status={{ page.status_filter | urlencode }}">从第一页重新筛选</a>。</div>{% endif %}
+      {% for url in page.pending_urls %}<div class="fu-notice" role="status">一条记录的来源检查尚未完成。<a href="{{ url }}">继续检查此记录 →</a></div>{% endfor %}
+      {% if page.verifying | default(false) %}<p class="fu-helper">正在单独核验一条跟进记录；其余记录请返回列表查看。</p>{% endif %}
+      <div class="fu-records">
+      {% for item in page['items'] %}
+        <article class="fu-record"><div class="fu-record-main"><div class="fu-record-heading"><strong>{{ item.display_name or item.conversation_id }}</strong><span class="fu-status">{{ states[item.status] }}</span></div><p class="fu-meta">{{ {'wechat':'微信','alibaba':'阿里国际站','whatsapp':'WhatsApp'}.get(item.channel,'未知渠道') }} · {{ item.account }}</p><p class="fu-note">{{ item.content or '暂无备注' }}</p><small>更新：{{ item.updated_display }} · {{ item.updated_by }}</small></div><a class="fu-record-link" href="{{ item.detail_url }}">查看会话 <span aria-hidden="true">→</span></a></article>
+      {% else %}<div class="fu-empty"><div class="fu-empty-icon" aria-hidden="true">✦</div><strong>此状态下暂无可显示的跟进记录</strong><p>试试切换跟进状态，或在客户工作台为会话保存状态和备注。</p><a href="/v3/workbench">前往客户工作台 <span aria-hidden="true">→</span></a></div>{% endfor %}
+      </div>
+      <p class="fu-footnote">列表不是固定快照；状态或授权变化后，请从第一页重新筛选。</p>
+      <p class="fu-footnote">阿里目前仅核对已授权历史会话，实时 PWA 消息尚未纳入此列表。</p>
+      {% if page.next_url %}<div class="fu-pagination"><a href="{{ page.next_url }}">下一页 <span aria-hidden="true">→</span></a></div>{% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}
