@@ -2,6 +2,7 @@
 
 这个仓库是项目的公开源码与测试的一部分，不是完整生产系统。开始任务时依次阅读：
 
+0. [总纲](docs/north-star.md)：唯一权威的目标、生意模型、红线和当前里程碑，与其他文档冲突时以它为准。
 1. [仓库说明](README.md)：已有文件、哪些只是示例，以及测试命令。
 2. [产品目标与开发路线](docs/project-roadmap.md)：用户确认的业务目标与分阶段验收。
 3. [项目现状与接续](docs/project-status.md)：公开范围内已验证的能力、缺口与最近状态日期。
@@ -19,3 +20,32 @@
 - AI 网页、Claude Code、Codex 和其他窗口不会自动共享对话或私有记忆。仅根据实际提供且已获授权的文件工作，不假称已经读取其他平台的历史。
 
 GitHub 仓库以 `toplele9988/ops` 为准；提交前核对仓库本地 Git 作者和当前授权账号，保持不同项目及账号独立。
+
+## 知识库（先查再答）
+
+所有能够访问本机工作目录的 AI 会话（包括 Claude、Codex）遇到产品、供应商或客户历史问题，先运行统一入口，再依据结果与来源回答。公司背景随检索结果自动返回；不把检索命中当作已核实的价格、规格或承诺。
+
+在仓库根目录、以 `imgw` 身份运行：
+
+```sh
+env PYTHONPATH=/opt/imgw/wechat:/srv/imgw-dev/ops/src /opt/imgw/venv/bin/python scripts/kb_search.py "产品问题" --purpose product_facts --top 8
+# 机器可读输出：追加 --json
+```
+
+本次本机实测进程已是 `imgw`，以上直接调用方式通过。所要求的
+`sudo -n -u imgw env PYTHONPATH=/opt/imgw/wechat:/srv/imgw-dev/ops/src /opt/imgw/venv/bin/python scripts/kb_search.py ...`
+在当前受限容器被 sudo 的 no-new-privileges 限制拒绝，不能声称该 sudo 方式已跑通。无需、也不应为查询修改生产权限。
+
+- `owner`（默认）：老板内部查询，所有资料族，包括保密和成本价敏感资料；遵守结果里的 `confidential`、`is_cost_price` 标记。
+- `product_facts`：供应商资料、技术参考、供应商沟通。仍可能含内部保密或成本价，不能直接发给客户。
+- `customer_reply`：仅供系统起草内部调用；排除成本价、保密资料及其他买家会话，只在精确匹配时加入当前会话历史。CLI 与普通搜索/问答 API 不开放此用途。
+
+不要将真实正文、价格、身份、附件路径或查询结果抄入公开仓库、测试、日志；对外回答不得泄露成本价或其他客户资料。不确定时明确写【待确认：…】，保留来源与日期。未命中时直接说知识库未找到，不猜测。无法访问本机文件的外部网页会话不能自动使用此入口，须由授权人员提供经筛选的上下文。用法与策略见 [知识中枢](docs/knowledge-hub.md)。
+
+
+## 交付纪律（所有会话必须遵守）
+
+- 需求以 `web/src/data/requirements.json`（系统里的「需求与验收」页）为准：用户提新要求，先加进账本、复述，再动手；做完更新状态。总方案见 [docs/master-plan.md](docs/master-plan.md)，业务模型见 [docs/deal-design.md](docs/deal-design.md)。
+- 任何上线前必须运行 `scripts/e2e_smoke.sh`（真实数据只读演练 + 真实浏览器全页面检查，桌面与手机），全部通过才能装入生产；不通过要先修。
+- 给 Codex 的任务书必须先读真实源码/库结构再写字段名；不要凭记忆（曾因猜错一个配置字段名，整个渠道读不到）。
+- 上线顺序：备份 → 装入 → 核对路由表 → 库升级要主动触发迁移 → 重启 → 复查。对外发送、收款确认永远由人点击；系统不替用户向任何人发测试消息。

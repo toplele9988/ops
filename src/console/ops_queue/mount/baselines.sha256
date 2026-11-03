@@ -1,0 +1,4 @@
+# Historical production baseline copied from docs/r7f/production-code-baselines.sha256. NOT re-read or verified in this task.
+0c5ad44de0a5dbe0887819300d448f4bdcd0b970a83ed125365069dbd4666c21  console/v3.py
+# Current workspace baseline, verified locally:
+7917de04d7fcb1178e67a0314c4231cbbf6aa382cb7fbf07297c729f21b72810  scripts/rehearsal_server.py

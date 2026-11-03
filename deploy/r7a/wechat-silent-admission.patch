@@ -1,0 +1,19 @@
+--- a/wechat/api_groupbot.py
++++ b/wechat/api_groupbot.py
+@@ -911,10 +911,15 @@
+             if not record_media_progress(db, message, now):
+                 return 503
+             db.execute("INSERT OR IGNORE INTO inbound_routes VALUES (?,?,'group')", (message.app_id, message.message_id))
++            # Receive-only rows have no reply work, even below MAX_QUEUE.
++            # Media and knowledge retain their independent source checks.
++            retained_only = (config.get("receive_only_mode") is True
++                and config.get("send_enabled") is False and collection_only(config)
++                and group.get("reply_mode") == "silent")
+             db.execute("INSERT INTO messages (app_id,message_id,group_id,sender_id,created_at,payload,updated_at,status) VALUES (?,?,?,?,?,?,?,?)", (
+                 message.app_id, message.message_id, message.group_id, message.sender_id,
+                 message.created_at, _json(dataclasses.asdict(message)), now,
+-                "collected_silent" if collected_overflow else "pending"))
++                "collected_silent" if retained_only or collected_overflow else "pending"))
+             if memory_scope:
+                 db.execute("INSERT INTO message_scopes VALUES (?,?,?,?,?,?)", (
+                     message.app_id, message.message_id, *memory_scope, message.own_wxid,

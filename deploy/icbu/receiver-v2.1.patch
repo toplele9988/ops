@@ -1,0 +1,562 @@
+# 阿里接收端 v2.1 候选；仅供总指挥审查后应用。
+# 生产 v2 基线 SHA-256 icbu_inbound_receiver.py: d2bc8fbb487ee1c4cf8ee3f13af31438dce3484773b44de84a8f48028234fe1b
+--- a/icbu_inbound_receiver.py
++++ b/icbu_inbound_receiver.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-# Production baseline SHA-256: c2901a5c641e6f56959b3b4eb2e0952deeb29af908a4e46af0f84060f3a7a538
++# Production v2 baseline SHA-256: d2bc8fbb487ee1c4cf8ee3f13af31438dce3484773b44de84a8f48028234fe1b
+ """ICBU inbound candidate. No browser control and no Alibaba send capability."""
+ from __future__ import annotations
+ 
+@@ -30,7 +30,7 @@
+ from icbu_probe_heartbeat import HEARTBEAT_PATH, HeartbeatRejected, HeartbeatStore, read_payload, server_clock
+ import icbu_live_drafts as live
+ from icbu_operations import Operations,API_PREFIX
+-from icbu_attachments import AttachmentRejected, AttachmentStore, SAFE_ID, validate_fields
++from icbu_attachments import AttachmentRejected, AttachmentStore, canonical_event_id, validate_fields
+ OPERATIONS_PATHS=(API_PREFIX+"poll",API_PREFIX+"ack")
+ V2_FIELDS = {"message_kind", "attachments", "cards"}
+ ATTACHMENT_ROUTE = r"/api/inbound/alibaba/attachments/([A-Za-z0-9_-]{1,128})/([A-Za-z0-9_-]{1,128})"
+@@ -153,6 +153,8 @@
+         if out["event_id"] is not None and out["event_id"] != header_key:
+             raise Rejected("event_id_header_mismatch")
+         out["event_id"] = header_key
++    if out["event_id"] is not None and out["event_id"].startswith("e1_"):
++        raise Rejected("event_id_reserved_prefix")
+     raw_url = text_field(payload.get("url"), "url", 4096)
+     if any(c.isspace() for c in raw_url) or "\\" in raw_url:
+         raise Rejected("invalid_url")
+@@ -188,7 +190,8 @@
+         except (ValueError, TypeError, KeyError):
+             raise Rejected("invalid_live_provenance") from None
+     try:
+-        out.update(validate_fields(dict(payload, event_id=out["event_id"])))
++        out.update(validate_fields(dict(payload, event_id=out["event_id"]),
++                                   allow_legacy_event_id=payload.get("event_id") is not None))
+     except AttachmentRejected as exc:
+         raise Rejected(exc.code, exc.status) from None
+     return out
+@@ -251,6 +254,11 @@
+  key TEXT PRIMARY KEY, inbound_id TEXT NOT NULL REFERENCES inbound(id), fingerprint TEXT NOT NULL
+ );
+ CREATE INDEX IF NOT EXISTS inbound_work ON inbound(state,next_attempt_at,lease_until);
++CREATE TABLE IF NOT EXISTS inbound_observations (
++ inbound_id TEXT NOT NULL REFERENCES inbound(id), request_sha256 TEXT NOT NULL,
++ received_at REAL NOT NULL, observed_at TEXT, clock_skew_seconds REAL,
++ PRIMARY KEY(inbound_id,request_sha256)
++);
+ PRAGMA user_version=2;
+ """
+ 
+@@ -279,21 +287,24 @@
+         db.execute("PRAGMA synchronous=FULL")
+         return contextlib.closing(db)
+ 
+-    def receive(self, payload, *, now=None):
++    def receive(self, payload, *, now=None, request_sha256=None):
+         # One lock spans the two durable stores. A lost ACK or failed sidecar
+         # commit is repaired by replaying the same event, never a new message.
++        now = time.time() if now is None else now
+         rich = bool(payload.get("attachments") or payload.get("cards"))
++        request_sha256 = request_sha256 or hashlib.sha256(compact(payload).encode("utf-8")).hexdigest()
+         guard = self.attachments.guard() if rich and self.attachments else contextlib.nullcontext()
+         try:
+             with guard:
+-                response, metadata = self._receive(payload, now=now)
++                response, metadata = self._receive(payload, now=now, request_sha256=request_sha256)
+                 if rich and self.attachments:
+-                    self.attachments.link_messages(response["inbound_id"], metadata, now=now)
++                    self.attachments.link_messages(response["inbound_id"], metadata, now=now,
++                                                   request_sha256=request_sha256)
+                 return response
+         except AttachmentRejected as exc:
+             raise Rejected(exc.code, exc.status) from None
+ 
+-    def _receive(self, payload, *, now=None):
++    def _receive(self, payload, *, now=None, request_sha256):
+         now = time.time() if now is None else now
+         keys = []
+         if payload["message_id"]:
+@@ -363,11 +374,20 @@
+                 events = set()
+                 for row in db.execute("SELECT key FROM dedup WHERE inbound_id=?", (inbound_id,)):
+                     key = json.loads(row[0])
+-                    if (len(key) == 3 and key[:2] == [ACCOUNT, "event"]
+-                            and isinstance(key[2], str) and SAFE_ID.fullmatch(key[2])):
+-                        events.add(key[2])
++                    if len(key) == 3 and key[:2] == [ACCOUNT, "event"]:
++                        try:
++                            events.add(canonical_event_id(key[2]))
++                        except AttachmentRejected:
++                            # Legacy text IDs outside the rich transport contract
++                            # retain their original dedup keys without a new link.
++                            continue
+                 metadata = [dict(merged, event_id=event) for event in sorted(events)]
+                 self.attachments.check_messages(inbound_id, metadata)
++            observed = payload.get("observed_at")
++            skew = now - datetime.fromisoformat(observed).timestamp() if observed else None
++            db.execute("""INSERT OR IGNORE INTO inbound_observations
++              (inbound_id,request_sha256,received_at,observed_at,clock_skew_seconds) VALUES(?,?,?,?,?)""",
++                       (inbound_id, request_sha256, now, observed, skew))
+             db.execute("COMMIT")  # ACK may only be constructed after this succeeds.
+         return {"ok": True, "persisted": True, "inbound_id": inbound_id,
+                 "event_id": payload["event_id"], "status": state, "duplicate": duplicate,
+@@ -426,6 +446,19 @@
+                 "public_sources": json.loads(row["public_sources"]) if row["public_sources"] else [],
+                 "timings": json.loads(row["timings"]) if row["timings"] else None,
+                 "created_at": row["created_at"], "ready_at": row["ready_at"]}
++
++    def attachment_kind(self, inbound_id, attachment_id):
++        # v2 stored kind in the message payload before the sidecar tracked it.
++        if inbound_id is None:
++            return None
++        with self.connect() as db:
++            row = db.execute("SELECT payload FROM inbound WHERE id=?", (inbound_id,)).fetchone()
++        if row:
++            for item in json.loads(row["payload"]).get("attachments", []):
++                if item.get("attachment_id") == attachment_id:
++                    kind = item.get("kind")
++                    return kind if kind in ("image", "video", "file", "voice") else None
++        return None
+ 
+ 
+ def read_restricted(path, *, max_bytes=65536):
+@@ -746,7 +779,7 @@
+             attachment = re.fullmatch(ATTACHMENT_ROUTE, self.path)
+             if self.path not in ("/api/inbound/alibaba", IMPORT_PATH, PROBE_DOWNLOAD_PATH, HEARTBEAT_PATH)+OPERATIONS_PATHS and not re.fullmatch(r"/api/inbound/alibaba/[0-9a-f-]{36}", self.path) and not attachment:
+                 raise Rejected("not_found", 404)
+-            allowed_methods = ("PUT",) if attachment else ("POST", "GET")
++            allowed_methods = ("PUT", "GET") if attachment else ("POST", "GET")
+             if not self.origin() or self.headers.get("Access-Control-Request-Method") not in allowed_methods:
+                 raise Rejected("invalid_preflight", 403)
+             headers = {h.strip().lower() for h in self.headers.get("Access-Control-Request-Headers", "").split(",") if h.strip()}
+@@ -775,6 +808,18 @@
+                 except ProbeDownloadRejected as exc:
+                     raise Rejected(exc.code, exc.status) from None
+                 return
++            attachment = re.fullmatch(ATTACHMENT_ROUTE, self.path)
++            if attachment:
++                try:
++                    response = self.server.store.attachments.readback(attachment[1], attachment[2])
++                except AttachmentRejected as exc:
++                    raise Rejected(exc.code, exc.status) from None
++                if response["registered"] and response["kind"] is None:
++                    response["kind"] = self.server.store.attachment_kind(response["inbound_id"], attachment[2])
++                self.reply(200, response)
++                return
++            if self.path.startswith("/api/inbound/alibaba/attachments/"):
++                raise Rejected("invalid_attachment_path", 400)
+             match = re.fullmatch(r"/api/inbound/alibaba/([0-9a-f-]{36})", self.path)
+             if not match:
+                 raise Rejected("not_found", 404)
+@@ -792,6 +837,8 @@
+                     match[1], match[2], self.headers, self.rfile)
+             except AttachmentRejected as exc:
+                 raise Rejected(exc.code, exc.status) from None
++            if response["kind"] is None:
++                response["kind"] = self.server.store.attachment_kind(response["inbound_id"], match[2])
+             self.reply(200 if response["duplicate"] else 201, response)
+         self.guarded(put)
+ 
+@@ -828,6 +875,7 @@
+             if len(content_types) != 1 or content_types[0].lower().replace(" ", "") not in ("application/json", "application/json;charset=utf-8"):
+                 raise Rejected("json_required", 415)
+             raw = self.rfile.read(length)
++            received_at = time.time()
+             if len(raw) != length:
+                 raise Rejected("incomplete_body")
+             def pairs(items):
+@@ -854,7 +902,8 @@
+             if len(keys) > 1:
+                 raise Rejected("invalid_idempotency_key")
+             payload = validate(payload, keys[0] if keys else None)
+-            response = self.server.store.receive(payload)
++            response = self.server.store.receive(payload, now=received_at,
++                                                 request_sha256=hashlib.sha256(raw).hexdigest())
+             self.server.wake.set()
+             self.reply(200 if response["duplicate"] else 202, response)
+         self.guarded(post)
+# 生产 v2 基线 SHA-256 icbu_attachments.py: b76a97da8f478c6d5244c5a2cba4371cbf8c676136e5f2929afad8c9985efb37
+--- a/icbu_attachments.py
++++ b/icbu_attachments.py
+@@ -1,11 +1,13 @@
+ #!/usr/bin/env python3
+ """阿里 v2 附件按不透明字节归档；不解析、不执行、不访问来源网址。
+ 
+-接收端生产基线 sha256: c2901a5c641e6f56959b3b4eb2e0952deeb29af908a4e46af0f84060f3a7a538
++附件模块 v2 生产基线 sha256: b76a97da8f478c6d5244c5a2cba4371cbf8c676136e5f2929afad8c9985efb37
+ """
+ from __future__ import annotations
+ 
+ from contextlib import contextmanager
++import base64
++import binascii
+ import errno
+ import fcntl
+ import hashlib
+@@ -24,7 +26,9 @@
+ MAX_FILE_BYTES = 50 * 1024 * 1024
+ DEFAULT_DB = '/var/lib/imgw/icbu/attachments.sqlite3'
+ DEFAULT_ROOT = '/var/lib/imgw/icbu/attachments'
++NAS_ARCHIVE_ROOT = Path('/mnt/nas229/edge/imgw-archive')
+ SAFE_ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
++EVENT_ID = re.compile(r'[A-Za-z0-9._:/@+\-=]{1,256}\Z')
+ SHA256 = re.compile(r'[a-f0-9]{64}\Z')
+ MESSAGE_KINDS = frozenset(('text', 'image', 'video', 'file', 'voice', 'product_card',
+                            'inquiry_card', 'order_card', 'link_card', 'system'))
+@@ -67,6 +71,15 @@
+ CREATE TABLE IF NOT EXISTS cleanup_candidates (
+  filename TEXT PRIMARY KEY, first_seen_at REAL NOT NULL, cleanup_pending INTEGER NOT NULL DEFAULT 0
+ );
++CREATE TABLE IF NOT EXISTS attachment_kinds (
++ event_id TEXT NOT NULL, attachment_id TEXT NOT NULL, kind TEXT NOT NULL,
++ PRIMARY KEY(event_id,attachment_id)
++);
++CREATE TABLE IF NOT EXISTS enrichment_ledger (
++ event_id TEXT NOT NULL, event_alias TEXT NOT NULL, inbound_id TEXT NOT NULL,
++ request_sha256 TEXT NOT NULL, created_at REAL NOT NULL,
++ PRIMARY KEY(event_id,inbound_id,request_sha256)
++);
+ PRAGMA user_version=1;
+ '''
+ 
+@@ -106,6 +119,9 @@
+         'attachment_storage_unavailable': '附件存储暂不可用，请让管理员检查存储后重传相同编号。',
+         'attachment_configuration_invalid': '附件配置不正确，请让管理员检查目录、容量和清理时限。',
+         'attachment_database_version_invalid': '附件库版本不支持，请让管理员核对部署版本。',
++        'event_id_reserved_prefix': '事件编号以保留前缀 e1_ 开头，请保留原事件编号，勿把传输别名作为正文编号。',
++        'event_id_alias_too_long': '这个旧事件编号超过 93 个 UTF-8 字节，无法生成附件传输别名，请让管理员核对原编号。',
++        'invalid_event_alias': '事件传输别名无效，请按原事件编号重新计算无填充的 base64url 别名。',
+     }
+     if code in messages:
+         return messages[code]
+@@ -139,6 +155,36 @@
+     return value
+ 
+ 
++def canonical_event_id(value, *, transport=False):
++    """别名只出现在传输路径，库内始终保存原事件编号。"""
++    _require(isinstance(value, str), 'invalid_event_id')
++    if transport:
++        _require(SAFE_ID.fullmatch(value), 'invalid_event_alias' if value.startswith('e1_') else 'invalid_event_id')
++        if not value.startswith('e1_'):
++            return value
++        encoded = value[3:]
++        try:
++            raw = base64.b64decode(encoded + '=' * (-len(encoded) % 4), altchars=b'-_', validate=True)
++            original = raw.decode('utf-8')
++        except (ValueError, UnicodeError, binascii.Error):
++            raise AttachmentRejected('invalid_event_alias') from None
++        _require(0 < len(raw) <= 93 and EVENT_ID.fullmatch(original) and not SAFE_ID.fullmatch(original)
++                 and not original.startswith('e1_')
++                 and base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=') == encoded,
++                 'invalid_event_alias')
++        return original
++    _require(EVENT_ID.fullmatch(value), 'invalid_event_id')
++    _require(not value.startswith('e1_'), 'event_id_reserved_prefix')
++    if not SAFE_ID.fullmatch(value):
++        _require(len(value.encode('utf-8')) <= 93, 'event_id_alias_too_long')
++    return value
++
++
++def event_alias(value):
++    value = canonical_event_id(value)
++    return value if SAFE_ID.fullmatch(value) else 'e1_' + base64.urlsafe_b64encode(value.encode('utf-8')).decode('ascii').rstrip('=')
++
++
+ def _filename(value, mime):
+     _require(isinstance(value, str) and value == value.strip(), 'invalid_attachment_filename')
+     value = _text(value, 'attachment_filename', 200)
+@@ -167,7 +213,7 @@
+     return urlunsplit(('https', host.lower(), parsed.path or '/', '', ''))
+ 
+ 
+-def validate_fields(payload):
++def validate_fields(payload, *, allow_legacy_event_id=False):
+     """只返回存在的新字段，旧载荷不添加任何默认值。"""
+     out = {}
+     if 'message_kind' in payload:
+@@ -222,7 +268,10 @@
+             cards.append(card)
+         out['cards'] = cards
+     if out.get('attachments') or out.get('cards'):
+-        _id(payload.get('event_id'), 'event_id')
++        if allow_legacy_event_id:
++            canonical_event_id(payload.get('event_id'))
++        else:
++            _id(payload.get('event_id'), 'event_id')
+     return out
+ 
+ 
+@@ -247,22 +296,24 @@
+              and (directory or info.st_nlink == 1), 'attachment_storage_unsafe', 503)
+ 
+ 
+-def _directory(path):
++def _directory(path, *, create=True, private=True):
+     path = str(path)
+     _require(path.startswith('/') and path != '/' and all(p not in ('.', '..') for p in path.split('/')),
+              'attachment_storage_unsafe', 503)
+     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+     try:
+         for part in PurePosixPath(path).parts[1:]:
+-            try:
+-                os.mkdir(part, 0o700, dir_fd=fd)
+-                os.fsync(fd)
+-            except FileExistsError:
+-                pass
++            if create:
++                try:
++                    os.mkdir(part, 0o700, dir_fd=fd)
++                    os.fsync(fd)
++                except FileExistsError:
++                    pass
+             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+             os.close(fd)
+             fd = child
+-        _check(os.fstat(fd), directory=True)
++        if private:
++            _check(os.fstat(fd), directory=True)
+         return fd
+     except BaseException:
+         os.close(fd)
+@@ -290,9 +341,13 @@
+ 
+ class AttachmentStore:
+     """同一归档目录的写操作由线程锁和文件锁串行，SQLite 内使用事务。"""
+-    def __init__(self, db_path=None, root=None, *, max_total_bytes=None, orphan_hours=None):
++    def __init__(self, db_path=None, root=None, *, max_total_bytes=None, orphan_hours=None, archive_root=None):
+         self.path = Path(db_path or os.environ.get('ICBU_ATTACHMENTS_DB', DEFAULT_DB))
+         self.root = Path(root or os.environ.get('ICBU_ATTACHMENTS_ROOT', DEFAULT_ROOT))
++        self.archive_root = Path(archive_root) if archive_root is not None else (
++            NAS_ARCHIVE_ROOT if NAS_ARCHIVE_ROOT in self.root.parents else None)
++        _require(self.archive_root is None or self.archive_root.is_absolute()
++                 and self.archive_root in self.root.parents, 'attachment_configuration_invalid', 503)
+         self.max_bytes = int(max_total_bytes if max_total_bytes is not None else os.environ.get('ICBU_ATTACHMENTS_MAX_BYTES', 10 * 1024**3))
+         self.orphan_hours = float(orphan_hours if orphan_hours is not None else os.environ.get('ICBU_ATTACHMENTS_ORPHAN_HOURS', 24))
+         _require(self.path.is_absolute() and self.path.name not in ('', '.', '..') and '..' not in self.path.parts
+@@ -302,6 +357,7 @@
+         self._db_identity = None
+         self._root_identity = None
+         self._parent_identity = None
++        self._archive_identity = None
+         try:
+             with self.guard(), self._connect() as db:
+                 version = db.execute('PRAGMA user_version').fetchone()[0]
+@@ -313,6 +369,28 @@
+         except (OSError, sqlite3.Error, ValueError):
+             raise AttachmentRejected('attachment_storage_unavailable', 503) from None
+ 
++    def _check_archive(self):
++        if self.archive_root is None:
++            return
++        directory = sentinel = None
++        try:
++            directory = _directory(self.archive_root, create=False, private=False)
++            sentinel = os.open('.imgw-archive-id', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
++            archive, marker = os.fstat(directory), os.fstat(sentinel)
++            _require(stat.S_ISREG(marker.st_mode) and marker.st_nlink == 1 and not marker.st_mode & 0o022,
++                     'attachment_storage_unavailable', 503)
++            identity = (archive.st_dev, archive.st_ino, marker.st_dev, marker.st_ino)
++            _require(self._archive_identity is None or self._archive_identity == identity,
++                     'attachment_storage_unavailable', 503)
++            self._archive_identity = identity
++        except (OSError, ValueError):
++            raise AttachmentRejected('attachment_storage_unavailable', 503) from None
++        finally:
++            if sentinel is not None:
++                os.close(sentinel)
++            if directory is not None:
++                os.close(directory)
++
+     @contextmanager
+     def guard(self):
+         """可包住主消息库的去重/提交，避免上传与元数据预检之间的竞态。"""
+@@ -322,15 +400,18 @@
+                 return
+             root = lock = None
+             try:
+-                root = _directory(self.root)
++                self._check_archive()
++                root = _directory(self.root, create=self.archive_root is None)
+                 identity = os.fstat(root)
+                 identity = (identity.st_dev, identity.st_ino)
+-                _require(self._root_identity is None or self._root_identity == identity, 'attachment_storage_unsafe', 503)
++                _require(self._root_identity is None or self._root_identity == identity,
++                         'attachment_storage_unavailable' if self.archive_root else 'attachment_storage_unsafe', 503)
+                 self._root_identity = identity
+                 lock = _file(root, '.attachments.lock', os.O_RDWR | os.O_CREAT)
+                 fcntl.flock(lock, fcntl.LOCK_EX)
+                 self._local.root = root
+                 yield root
++                self._check_archive()
+             except AttachmentRejected:
+                 raise
+             except TimeoutError:
+@@ -388,9 +469,10 @@
+ 
+     def _check_message(self, db, inbound_id, payload):
+         event = payload.get('event_id')
+-        if not isinstance(event, str) or not SAFE_ID.fullmatch(event):
++        if event is None:
+             _require(not payload.get('attachments') and not payload.get('cards'), 'invalid_event_id')
+             return
++        event = canonical_event_id(event)
+         match = db.execute('SELECT inbound_id FROM message_links WHERE event_id=?', (event,)).fetchone()
+         _require(match is None or match['inbound_id'] == inbound_id, 'attachment_event_conflict', 409)
+         event_rows = db.execute('SELECT * FROM attachments WHERE event_id=?', (event,)).fetchall()
+@@ -406,6 +488,11 @@
+                      and (not row['filename'] or not item['filename'] or item['filename'] == row['filename'])
+                      for item in aliases), 'attachment_metadata_conflict', 409)
+         for item in payload.get('attachments') or []:
++            kinds = db.execute('''SELECT k.kind FROM attachment_kinds k JOIN attachments a
++              ON k.event_id=a.event_id AND k.attachment_id=a.attachment_id
++              WHERE a.attachment_id=? AND (a.event_id=? OR a.inbound_id=?)''',
++                               (item['attachment_id'], event, inbound_id)).fetchall()
++            _require(all(row['kind'] == item['kind'] for row in kinds), 'attachment_metadata_conflict', 409)
+             rows = db.execute('''SELECT * FROM attachments WHERE attachment_id=?
+               AND (event_id=? OR inbound_id=?)''', (item['attachment_id'], event, inbound_id)).fetchall()
+             hashes = {digest for row in rows for digest in (row['sha256'], row['declared_sha256']) if digest}
+@@ -431,7 +518,8 @@
+             add(row)
+         for payload in payloads:
+             event = payload.get('event_id')
+-            if isinstance(event, str) and SAFE_ID.fullmatch(event):
++            if event is not None:
++                event = canonical_event_id(event)
+                 for row in db.execute('SELECT * FROM attachments WHERE event_id=?', (event,)):
+                     add(row)
+             for item in payload.get('attachments') or []:
+@@ -440,6 +528,7 @@
+             hashes = {digest for item in items for digest in (item.get('sha256'), item.get('declared_sha256')) if digest}
+             _require(len(hashes) <= 1 and len({item['size'] for item in items}) <= 1
+                      and len({item['mime'] for item in items}) <= 1
++                     and len({item['kind'] for item in items if item.get('kind')}) <= 1
+                      and len({item['filename'] for item in items if item.get('filename')}) <= 1,
+                      'attachment_metadata_conflict', 409)
+         for payload in payloads:
+@@ -448,7 +537,7 @@
+     def check_messages(self, inbound_id, payloads):
+         payloads = list(payloads)
+         for payload in payloads:
+-            validate_fields(payload)
++            validate_fields(payload, allow_legacy_event_id=True)
+         with self.guard(), self._connect() as db:
+             self._check_messages(db, inbound_id, payloads)
+ 
+@@ -457,8 +546,9 @@
+ 
+     def _link_message(self, db, inbound_id, payload, stamp):
+         event = payload.get('event_id')
+-        if not isinstance(event, str) or not SAFE_ID.fullmatch(event):
++        if event is None:
+             return
++        event = canonical_event_id(event)
+         db.execute('INSERT OR IGNORE INTO message_links(event_id,inbound_id) VALUES(?,?)', (event, inbound_id))
+         db.execute('UPDATE attachments SET inbound_id=?,cleanup_pending=0 WHERE event_id=?', (inbound_id, event))
+         for item in payload.get('attachments') or []:
+@@ -468,21 +558,54 @@
+               declared_sha256=COALESCE(attachments.declared_sha256,excluded.declared_sha256),
+               filename=excluded.filename,inbound_id=excluded.inbound_id,cleanup_pending=0''',
+                        (event, item['attachment_id'], item.get('sha256'), item['size'], item['mime'], item['filename'], inbound_id, stamp))
+-
+-    def link_messages(self, inbound_id, payloads, *, now=None):
++            db.execute('''INSERT INTO attachment_kinds(event_id,attachment_id,kind) VALUES(?,?,?)
++              ON CONFLICT(event_id,attachment_id) DO UPDATE SET kind=excluded.kind''',
++                       (event, item['attachment_id'], item['kind']))
++
++    def link_messages(self, inbound_id, payloads, *, now=None, request_sha256=None):
+         payloads = list(payloads)
+         for payload in payloads:
+-            validate_fields(payload)
++            validate_fields(payload, allow_legacy_event_id=True)
++        if request_sha256 is None:
++            request_sha256 = hashlib.sha256(json.dumps(payloads, sort_keys=True, ensure_ascii=False,
++                                            separators=(',', ':')).encode('utf-8')).hexdigest()
++        _require(isinstance(request_sha256, str) and SHA256.fullmatch(request_sha256), 'attachment_configuration_invalid', 503)
+         stamp = time.time() if now is None else now
+         with self.guard(), self._connect() as db:
+             db.execute('BEGIN IMMEDIATE')
+             self._check_messages(db, inbound_id, payloads)
+             for payload in payloads:
+                 self._link_message(db, inbound_id, payload, stamp)
++                if payload.get('event_id') is not None:
++                    event = canonical_event_id(payload['event_id'])
++                    db.execute('''INSERT OR IGNORE INTO enrichment_ledger
++                      (event_id,event_alias,inbound_id,request_sha256,created_at) VALUES(?,?,?,?,?)''',
++                               (event, event_alias(event), inbound_id, request_sha256, stamp))
+             self._mark(db, stamp)
++            self._check_archive()
+ 
+     def link_message(self, inbound_id, payload, *, now=None):
+         self.link_messages(inbound_id, [payload], now=now)
++
++    def readback(self, event_id, attachment_id, *, transport=True):
++        """只回显登记与内容状态，不返回文件字节、名称或存储路径。"""
++        event_id = canonical_event_id(event_id, transport=transport)
++        attachment_id = _id(attachment_id, 'attachment_id')
++        with self.guard() as root, self._connect() as db:
++            row = db.execute('SELECT * FROM attachments WHERE event_id=? AND attachment_id=?',
++                             (event_id, attachment_id)).fetchone()
++            link = db.execute('SELECT inbound_id FROM message_links WHERE event_id=?', (event_id,)).fetchone()
++            kind = db.execute('SELECT kind FROM attachment_kinds WHERE event_id=? AND attachment_id=?',
++                              (event_id, attachment_id)).fetchone()
++            digest = (row['sha256'] or row['declared_sha256']) if row else None
++            received = bool(row and row['sha256'] and self._existing(root, row['sha256'], row['size']))
++            inbound_id = row['inbound_id'] if row and row['inbound_id'] else link['inbound_id'] if link else None
++            self._check_archive()
++            return dict(ok=True, persisted=row is not None, registered=row is not None,
++                        file_received=received, size=row['size'] if row else None, sha256=digest,
++                        kind=kind['kind'] if kind else None, inbound_id=inbound_id,
++                        event_id=event_id, event_alias=event_alias(event_id), attachment_id=attachment_id,
++                        duplicate=received)
+ 
+     def _mark(self, db, now):
+         count = db.execute('''UPDATE attachments SET cleanup_pending=1 WHERE inbound_id IS NULL
+@@ -543,7 +666,7 @@
+ 
+     def receive_upload(self, event_id, attachment_id, headers, stream, *, now=None):
+         """调用方必须先做与消息入口相同的来源限制、Origin 检查和鉴权。"""
+-        event_id, attachment_id = _id(event_id, 'event_id'), _id(attachment_id, 'attachment_id')
++        event_id, attachment_id = canonical_event_id(event_id, transport=True), _id(attachment_id, 'attachment_id')
+         size, mime, expected = _headers(headers)
+         stamp = time.time() if now is None else now
+         temporary = None
+@@ -554,6 +677,8 @@
+                 row = db.execute('SELECT * FROM attachments WHERE event_id=? AND attachment_id=?',
+                                  (event_id, attachment_id)).fetchone()
+                 link = db.execute('SELECT inbound_id FROM message_links WHERE event_id=?', (event_id,)).fetchone()
++                kind = db.execute('SELECT kind FROM attachment_kinds WHERE event_id=? AND attachment_id=?',
++                                  (event_id, attachment_id)).fetchone()
+                 inbound_id = link['inbound_id'] if link else None
+                 if row is None:
+                     count = db.execute('SELECT COUNT(*) FROM attachments WHERE event_id=?', (event_id,)).fetchone()[0]
+@@ -582,6 +707,7 @@
+                         _require(isinstance(chunk, bytes) and 0 < len(chunk) <= remaining, 'attachment_incomplete_body')
+                         digest.update(chunk)
+                         if fd is not None:
++                            self._check_archive()
+                             _write(fd, chunk)
+                         remaining -= len(chunk)
+                     _require(digest.hexdigest() == expected, 'attachment_sha256_mismatch')
+@@ -591,6 +717,7 @@
+                     if fd is not None:
+                         os.close(fd)
+                 if temporary is not None:
++                    self._check_archive()
+                     os.rename(temporary, expected + '.bin', src_dir_fd=root, dst_dir_fd=root)
+                     temporary = None
+                 os.fsync(root)
+@@ -603,8 +730,10 @@
+                   sha256=excluded.sha256,inbound_id=COALESCE(attachments.inbound_id,excluded.inbound_id),cleanup_pending=0''',
+                            (event_id, attachment_id, expected, size, mime, inbound_id, stamp))
+                 self._mark(db, stamp)
++                self._check_archive()
+             return dict(ok=True, persisted=True, event_id=event_id, attachment_id=attachment_id,
+-                        sha256=expected, size_bytes=size, duplicate=duplicate,
++                        event_alias=event_alias(event_id), inbound_id=inbound_id,
++                        kind=kind['kind'] if kind else None, sha256=expected, size_bytes=size, duplicate=duplicate,
+                         status='linked' if inbound_id else 'orphan')
+         except AttachmentRejected:
+             raise

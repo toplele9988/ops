@@ -1,0 +1,420 @@
+--- a/deploy/icbu/v2.2/icbu_attachments.py
++++ b/deploy/icbu/v2.2/icbu_attachments.py
+@@ -410,9 +410,14 @@
+             return
+         directory = sentinel = None
+         try:
++            _require(os.path.ismount(self.archive_root), 'attachment_storage_unavailable', 503)
+             directory = _directory(self.archive_root, create=False, private=False)
+             sentinel = os.open('.imgw-archive-id', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+             archive, marker = os.fstat(directory), os.fstat(sentinel)
++            current = self.archive_root.stat()
++            _require(os.path.ismount(self.archive_root)
++                     and (archive.st_dev, archive.st_ino) == (current.st_dev, current.st_ino)
++                     and marker.st_dev == archive.st_dev, 'attachment_storage_unavailable', 503)
+             _require(stat.S_ISREG(marker.st_mode) and marker.st_nlink == 1 and not marker.st_mode & 0o022,
+                      'attachment_storage_unavailable', 503)
+             identity = (archive.st_dev, archive.st_ino, marker.st_dev, marker.st_ino)
+@@ -440,6 +445,8 @@
+                 self._check_archive()
+                 root = _directory(self.root, create=self.archive_root is None)
+                 identity = os.fstat(root)
++                _require(self.archive_root is None or identity.st_dev == self._archive_identity[0],
++                         'attachment_storage_unavailable', 503)
+                 identity = (identity.st_dev, identity.st_ino)
+                 _require(self._root_identity is None or self._root_identity == identity,
+                          'attachment_storage_unavailable' if self.archive_root else 'attachment_storage_unsafe', 503)
+--- a/deploy/icbu/v2.2/icbu_inbound_receiver.py
++++ b/deploy/icbu/v2.2/icbu_inbound_receiver.py
+@@ -733,6 +733,34 @@
+     protocol_version = "HTTP/1.0"
+     server_version = "ICBUInbound/2"
+     sys_version = ""
++    header_seconds = 8
++    request_seconds = 70
++
++    def _deadline(self, seconds):
++        previous = getattr(self, '_request_timer', None)
++        if previous is not None:
++            previous.cancel()
++        def expire():
++            if self._request_timer is timer:
++                self._request_expired = True
++                try:
++                    self.connection.shutdown(socket.SHUT_RDWR)
++                except OSError:
++                    pass
++        timer = threading.Timer(seconds, expire)
++        timer.daemon = True
++        self._request_timer = timer
++        timer.start()
++
++    def handle(self):
++        # Socket timeout limits idle reads; this deadline also bounds a continuous trickle.
++        self._request_expired = False
++        self._deadline(self.header_seconds)
++        try:
++            super().handle()
++        finally:
++            timer, self._request_timer = self._request_timer, None
++            timer.cancel()
+ 
+     def setup(self):
+         super().setup()
+@@ -752,6 +780,7 @@
+         expected = "Bearer " + self.server.token
+         if len(values) != 1 or not hmac.compare_digest(values[0].encode(), expected.encode()):
+             raise Rejected("unauthorized", 401)
++        self._deadline(self.request_seconds)
+ 
+     def reply(self, status, data, *, preflight=False):
+         raw = compact(data).encode("utf-8")
+@@ -776,6 +805,8 @@
+ 
+     def guarded(self, method):
+         try:
++            if getattr(self, '_request_expired', False):
++                raise Rejected('request_timeout', 408)
+             self.origin()
+             method()
+         except Rejected as exc:
+--- a/scripts/icbu_live_readback.py
++++ b/scripts/icbu_live_readback.py
+@@ -7,24 +7,51 @@
+ """
+ import argparse
+ import json
++import math
++from pathlib import Path
++import re
+ import sqlite3
+ import sys
++import uuid
++from contextlib import closing
+ from datetime import datetime
+ 
+ PROOF_KEYS = {'schema', 'mode', 'epoch_uuid', 'baseline_server_time_utc', 'baseline_watermark_sent_at', 'observed_seq'}
+ 
+ 
+ def parse(value):
+-    return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
++    if not isinstance(value, str) or len(value) > 64:
++        raise ValueError
++    stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
++    if stamp.tzinfo is None or not math.isfinite(stamp.timestamp()):
++        raise ValueError
++    return stamp.timestamp()
+ 
+ 
+-def proof_status(payload):
++def proof_status(payload, received_at=None):
+     proof = payload.get('live_provenance')
+     if not isinstance(proof, dict):
+         return 'missing'
+-    if set(proof) != PROOF_KEYS or proof['schema'] != 'amy-live-v1' or proof['mode'] != 'dom_tail_append':
++    if (set(proof) != PROOF_KEYS or proof['schema'] != 'amy-live-v1'
++            or proof['mode'] not in ('dom_tail_append', 'native_poll_after_baseline')):
++        return 'malformed'
++    try:
++        if (not isinstance(proof['epoch_uuid'], str) or str(uuid.UUID(proof['epoch_uuid'])) != proof['epoch_uuid']
++                or type(proof['observed_seq']) is not int or not 1 <= proof['observed_seq'] <= 1000000):
++            return 'malformed'
++        baseline, watermark = parse(proof['baseline_server_time_utc']), parse(proof['baseline_watermark_sent_at'])
++        sent, observed = parse(payload['sent_at']), parse(payload['observed_at'])
++        if not (baseline < sent and watermark < sent <= observed and observed - baseline <= 86400):
++            return 'malformed'
++        if received_at is not None and not (0 <= received_at - sent <= 300 and observed <= received_at + 30):
++            return 'malformed'
++    except (KeyError, ValueError, TypeError, OverflowError, OSError):
+         return 'malformed'
+     return 'ok'
++
++
++def safe_metadata(value, allowed):
++    return value if isinstance(value, str) and value in allowed else None
+ 
+ 
+ def main(argv=None):
+@@ -33,18 +60,22 @@
+     ap.add_argument('--since', type=float, default=0)
+     ap.add_argument('--json', action='store_true')
+     args = ap.parse_args(argv)
+-    db = sqlite3.connect(f'file:{args.db}?mode=ro', uri=True, timeout=10)
++    with closing(sqlite3.connect(Path(args.db).absolute().as_uri() + '?mode=ro', uri=True, timeout=10)) as db:
++        return readback(db, args.since, args.json)
++
++
++def readback(db, since, as_json):
+     db.execute('PRAGMA query_only=ON')
+     rows, identities, seqs = [], {}, {}
+     for inbound_id, raw, state, reason, created in db.execute(
+-            'SELECT id,payload,state,archive_reason,created_at FROM inbound WHERE created_at>=? ORDER BY created_at', (args.since,)):
++            'SELECT id,payload,state,archive_reason,created_at FROM inbound WHERE created_at>=? ORDER BY created_at', (since,)):
+         payload = json.loads(raw)
+         if payload.get('history') is not False:
+             continue
+-        status = proof_status(payload)
++        status = proof_status(payload, created)
+         try:
+             sent, observed = parse(payload['sent_at']), parse(payload['observed_at'])
+-        except (KeyError, ValueError, TypeError, AttributeError):
++        except (KeyError, ValueError, TypeError, AttributeError, OverflowError, OSError):
+             sent = observed = None
+         identity = (payload.get('account'), payload.get('conversation_id'), payload.get('message_id'))
+         identities[identity] = identities.get(identity, 0) + 1
+@@ -53,8 +84,16 @@
+         if epoch:
+             seqs.setdefault(epoch, []).append(proof['observed_seq'])
+         rows.append(dict(
+-            id=inbound_id[:8], created=datetime.fromtimestamp(created).strftime('%m-%d %H:%M:%S'), role=payload.get('role'),
+-            proof=status, probe_version=payload.get('probe_version'), state=state, archive_reason=reason,
++            id=inbound_id[:8] if isinstance(inbound_id, str) and re.fullmatch(r'[a-f0-9-]{36}', inbound_id) else None,
++            created=datetime.fromtimestamp(created).strftime('%m-%d %H:%M:%S'),
++            role=safe_metadata(payload.get('role'), ('buyer', 'seller', 'system', 'unknown')),
++            proof=status, probe_version=payload.get('probe_version') if isinstance(payload.get('probe_version'), str)
++            and re.fullmatch(r'[0-9]{1,3}(?:\.[0-9]{1,3}){2,5}', payload['probe_version']) else None,
++            state=safe_metadata(state, ('archived', 'pending', 'processing', 'retry', 'failed', 'draft_queued', 'draft_ready')),
++            archive_reason=safe_metadata(reason, ('history_import', 'role_seller', 'role_system', 'role_unknown',
++                'live_drafts_not_enabled', 'role_not_explicit_buyer', 'live_message_id_required',
++                'live_probe_version_unverified', 'live_platform_identity_unverified', 'live_proof_missing',
++                'live_proof_stale_or_invalid', 'live_epoch_replayed')),
+             observed_minus_sent=None if sent is None else round(observed - sent, 1),
+             created_minus_observed=None if observed is None else round(created - observed, 1),
+             seq=proof.get('observed_seq') if proof else None, message_id_shape_ok=bool(str(payload.get('message_id', '')).replace('.PNM', '').isdigit()),
+@@ -62,8 +101,9 @@
+     summary = dict(live_rows=len(rows), buyer=sum(r['role'] == 'buyer' for r in rows), seller=sum(r['role'] == 'seller' for r in rows),
+                    proof_ok=sum(r['proof'] == 'ok' for r in rows), proof_missing_or_bad=sum(r['proof'] != 'ok' for r in rows),
+                    duplicate_identities=sum(1 for n in identities.values() if n > 1),
+-                   seq_strictly_increasing=all(s == sorted(set(s)) for s in seqs.values()))
+-    if args.json:
++                   seq_strictly_increasing=(all(s == sorted(set(s)) for s in seqs.values())
++                       if seqs and all(r['proof'] == 'ok' for r in rows) else None))
++    if as_json:
+         print(json.dumps(dict(summary=summary, rows=rows), ensure_ascii=False))
+     else:
+         print(summary)
+@@ -73,4 +113,8 @@
+ 
+ 
+ if __name__ == '__main__':
+-    sys.exit(main())
++    try:
++        sys.exit(main())
++    except (sqlite3.Error, OSError, ValueError, TypeError, KeyError):
++        print('实时来源读回未完成，请核对只读库结构和记录格式；不要据此认定来源有效', file=sys.stderr)
++        sys.exit(1)
+--- a/scripts/nas_imgw_archive_mount.sh
++++ b/scripts/nas_imgw_archive_mount.sh
+@@ -12,21 +12,29 @@
+ [ "$(id -u)" = 0 ] || { echo "请用 sudo 运行"; exit 1; }
+ [ -f "$SRC" ] || { echo "找不到现有挂载单元 $SRC"; exit 1; }
+ [ -d "$WHERE" ] || { echo "目录 $WHERE 不存在，请先创建"; exit 1; }
+-[ ! -e "$DEST" ] || { echo "$DEST 已存在，不覆盖"; exit 1; }
+-sed -e 's#^Description=.*#Description=imgw archive (chat attachments and raw evidence) on NAS229 edge#' \
++[ ! -e "$DEST" ] && [ ! -L "$DEST" ] || { echo "$DEST 已存在，不覆盖"; exit 1; }
++(set -C; sed -e 's#^Description=.*#Description=imgw archive (chat attachments and raw evidence) on NAS229 edge#' \
+     -e 's#^What=.*#What=//192.168.100.229/edge/imgw-archive#' \
+-    -e "s#^Where=.*#Where=$WHERE#" "$SRC" > "$DEST"
++    -e "s#^Where=.*#Where=$WHERE#" "$SRC" > "$DEST")
+ chmod 644 "$DEST"
+ systemctl daemon-reload
+ systemctl start "$UNIT"
+ mountpoint "$WHERE"
+ # 以 imgw 身份验证：创建、写入、读回校验、原子改名、清理
+-sudo -u imgw sh -ec '
+-D='"$WHERE"'
+-echo "imgw-archive v1" > $D/.imgw-archive-id.tmp && mv $D/.imgw-archive-id.tmp $D/.imgw-archive-id
+-head -c 1048576 /dev/urandom > $D/.t.tmp
+-a=$(sha256sum $D/.t.tmp | cut -d" " -f1); mv $D/.t.tmp $D/.t.bin; b=$(sha256sum $D/.t.bin | cut -d" " -f1)
+-rm -f $D/.t.bin
++sudo -u imgw sh -es -- "$WHERE" <<'VERIFY_ARCHIVE'
++D=$1
++umask 077
++if [ -e "$D/.imgw-archive-id" ] || [ -L "$D/.imgw-archive-id" ]; then
++  [ -f "$D/.imgw-archive-id" ] && [ ! -L "$D/.imgw-archive-id" ] || { echo "哨兵不是普通文件，请管理员核对"; exit 1; }
++else
++  (set -C; printf '%s\n' 'imgw-archive v1' > "$D/.imgw-archive-id")
++fi
++probe=$(mktemp -d "$D/.imgw-check.XXXXXXXX")
++trap 'rm -f -- "$probe/data.tmp" "$probe/data.bin"; rmdir -- "$probe"' EXIT
++head -c 1048576 /dev/urandom > "$probe/data.tmp"
++a=$(sha256sum "$probe/data.tmp" | cut -d" " -f1)
++mv -- "$probe/data.tmp" "$probe/data.bin"
++b=$(sha256sum "$probe/data.bin" | cut -d" " -f1)
+ [ "$a" = "$b" ] && echo "imgw 写入/读回校验/原子改名：通过"
+-'
++VERIFY_ARCHIVE
+ echo "完成。开机自动挂载需要再执行：  sudo systemctl enable '$UNIT'"
+--- a/src/console/alibaba_open/protocol.py
++++ b/src/console/alibaba_open/protocol.py
+@@ -199,11 +199,12 @@
+             rows = value.get('order_list', {})
+             rows = rows.get('trade_ecology_order', []) if isinstance(rows, dict) else rows
+             total = _integer(value['total_count'])
+-            if not isinstance(rows, list) or len(rows) > page_size:
++            expected = min(page_size, max(0, total - page * page_size))
++            if not isinstance(rows, list) or len(rows) != expected:
+                 raise ValueError
+             orders = [dict(order_id=_text(row['trade_id']),
+                            modified_at_ms=_integer(row['modify_date']['timestamp'])) for row in rows]
+-            if total > (page + 1) * page_size and not rows:
++            if len({row['order_id'] for row in orders}) != len(orders):
+                 raise ValueError
+         except (KeyError, TypeError, ValueError, OpenError):
+             raise OpenError('订单列表字段不完整，水位没有推进，请管理员核对字段约定') from None
+--- a/src/console/alibaba_open/service.py
++++ b/src/console/alibaba_open/service.py
+@@ -230,11 +230,9 @@
+                     if (not isinstance(oid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', oid) or
+                             type(modified) is not int or not 0 < modified <= until):
+                         raise OpenError('订单编号或修改时间无法核对，请管理员检查接口契约')
+-                    if (oid, modified) in seen:
+-                        if listing['has_more']:
+-                            raise OpenError('订单分页出现重复记录，水位没有推进，请管理员检查分页契约')
+-                        continue
+-                    seen.add((oid, modified))
++                    if oid in seen:
++                        raise OpenError('订单分页出现重复记录，水位没有推进，请管理员检查分页契约')
++                    seen.add(oid)
+                     with self.store.read() as db:
+                         old = db.execute('SELECT modified_at_ms FROM observed_orders WHERE order_id=?', (oid,)).fetchone()
+                     if old and old['modified_at_ms'] >= modified and not self.candidates.needs_recovery(oid):
+--- a/src/console/pipeline/readers.py
++++ b/src/console/pipeline/readers.py
+@@ -1,6 +1,7 @@
+ """Bounded SQLite aggregates. No source body, identity or raw error leaves SQL."""
+ from contextlib import closing, contextmanager
+ from pathlib import Path
++import math
+ import re
+ import sqlite3
+ import time
+@@ -92,29 +93,29 @@
+ 
+ 
+ def heartbeat_continuity(db, now):
+-    """Expected-beat arrival rate over the trailing 24h (or since the first logged beat); None without a log.
+-
+-    A gap longer than slot+tolerance between consecutive beats (or since the last beat) counts as
+-    round(gap/slot)-1 missed beats, so ordinary jitter never reads as a miss.
+-    """
++    """Count occupied time slots, never let duplicate arrivals inflate coverage."""
+     try:
+         require(db, 'heartbeat_log', ('received_at',))
+     except MissingSchema:
+         return None
+-    rows = [row[0] for row in db.execute(
+-        "SELECT received_at FROM heartbeat_log WHERE typeof(received_at) IN ('integer','real') "
+-        "AND received_at>? AND received_at<=? ORDER BY received_at", (now - HEARTBEAT_WINDOW, now))]
+-    if not rows:
++    first = db.execute("SELECT MIN(received_at) FROM heartbeat_log "
++                       "WHERE typeof(received_at) IN ('integer','real') AND received_at>0 AND received_at<=?",
++                       (now,)).fetchone()[0]
++    if first is None:
+         return dict(window_seconds=0, slots=0, present=0, rate=None, max_consecutive_missing=0)
+-    missed, worst = 0, 0
+-    for before, after in zip(rows, rows[1:] + [now]):
+-        gap = after - before
+-        lost = round(gap / HEARTBEAT_SLOT) - 1 if gap > HEARTBEAT_SLOT + HEARTBEAT_TOLERANCE else 0
+-        missed, worst = missed + max(lost, 0), max(worst, lost)
+-    present = len(rows)
+-    slots = present + missed
+-    return dict(window_seconds=now - rows[0], slots=slots, present=present,
+-                rate=present / slots, max_consecutive_missing=worst)
++    start = max(now - HEARTBEAT_WINDOW, first)
++    slots = max(1, math.ceil((now - start) / HEARTBEAT_SLOT))
++    # At most 721 aggregate rows leave SQL, even if a sender floods the log.
++    occupied = {min(row[0], slots - 1) for row in db.execute(
++        "SELECT CAST((received_at-?+?)/? AS INTEGER) FROM heartbeat_log "
++        "WHERE typeof(received_at) IN ('integer','real') AND received_at>=? AND received_at<=? "
++        "GROUP BY 1", (start, HEARTBEAT_SLOT / 2, HEARTBEAT_SLOT, start, now))}
++    missing = worst = 0
++    for slot in range(slots):
++        missing = 0 if slot in occupied else missing + 1
++        worst = max(worst, missing)
++    return dict(window_seconds=now - start, slots=slots, present=len(occupied),
++                rate=len(occupied) / slots, max_consecutive_missing=worst)
+ 
+ 
+ def probe(db, now):
+--- a/src/console/pipeline/scorecard.py
++++ b/src/console/pipeline/scorecard.py
+@@ -58,7 +58,7 @@
+ def _a1(probe):
+     target = '24 小时按 120 秒发送，到达率 ≥99%，不得连续漏 3 次'
+     source = '阿里心跳 · heartbeat_log 逐次流水'
+-    method = ('按期望每 120 秒一拍，相邻心跳间隔不超过 150 秒不算漏，超出按 120 秒一拍折算漏收；暂停状态的心跳也算到达。'
++    method = ('按最近 24 小时划分 120 秒时间槽，就近归槽且每槽最多计一次到达；重复或突发心跳不能补足空槽。暂停状态的心跳也算到达。'
+               '维护窗口登记后才可从分母中扣除，目前未扣除。不足 1 小时、不足 24 小时但没有漏收时保持未知。')
+     cont = probe.get('continuity') if probe['ready'] else None
+     if not cont or not cont['slots']:
+--- a/src/console/wamedia/ingest.py
++++ b/src/console/wamedia/ingest.py
+@@ -1,5 +1,6 @@
+ """Bridge archive ingestion, bounded WAHA fallback and a receive-only work queue."""
+ import json
++import fcntl
+ import os
+ from pathlib import Path
+ import re
+@@ -177,6 +178,23 @@
+                            (updated, key, now, updated))
+ 
+     def run_one(self):
++        # A stalled download can outlive its lease. Only one live worker may publish results.
++        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
++        fd = os.open(str(self.path) + '.worker.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
++        try:
++            info = os.fstat(fd)
++            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
++                    or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600):
++                raise ValueError('附件队列锁不可用，请管理员检查权限')
++            try:
++                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++            except BlockingIOError:
++                return False
++            return self._run_one()
++        finally:
++            os.close(fd)
++
++    def _run_one(self):
+         now = self.clock()
+         with closing(self._connect()):
+             pass
+--- a/src/console/wamedia/store.py
++++ b/src/console/wamedia/store.py
+@@ -5,6 +5,7 @@
+ import re
+ import sqlite3
+ import stat
++import threading
+ import time
+ from contextlib import closing
+ 
+@@ -68,6 +69,8 @@
+             if len(parts) >= 3 and parts[1] == 'mnt':
+                 configured_mount = _nearest_mount(self.root) or Path('/mnt') / parts[2]
+         self.mount = Path(configured_mount).absolute() if configured_mount else None
++        self._mount_identity = None
++        self._mount_lock = threading.Lock()
+         if self.mount and (not self.root.is_relative_to(self.mount) or self.buffer_root.is_relative_to(self.mount)
+                            or self.buffer_root.is_relative_to('/mnt') or self.buffer_root.resolve() != self.buffer_root):
+             raise ValueError('附件目录或本机缓冲目录配置不可用')
+@@ -100,8 +103,16 @@
+                     finally:
+                         os.close(mount_fd)
+                 try:
+-                    if not stat.S_ISREG(os.fstat(marker).st_mode):
++                    marker_info = os.fstat(marker)
++                    mount_info = self.mount.stat()
++                    if not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1:
+                         raise OSError('附件存储标记不可用')
++                    identity = (mount_info.st_dev, mount_info.st_ino, info.st_dev, info.st_ino,
++                                marker_info.st_dev, marker_info.st_ino)
++                    with self._mount_lock:
++                        if self._mount_identity is not None and self._mount_identity != identity:
++                            raise OSError('附件存储已更换，请恢复原挂载和标记后重试')
++                        self._mount_identity = identity
+                 finally:
+                     os.close(marker)
+             return fd

@@ -1,0 +1,424 @@
+--- a/console/deals/rules.py
++++ b/console/deals/rules.py
+@@ -45,6 +45,6 @@
+ 
+ 
+ def pending_templates(stage, status, existing_keys):
+-    if status in ('won', 'lost'):
++    if status == 'lost' or (status == 'won' and not paid(stage)):
+         return []
+     return [t for t in templates(stage) if t['template_key'] not in existing_keys]
+--- a/console/deals/service.py
++++ b/console/deals/service.py
+@@ -7,19 +7,22 @@
+ from console.archive import validation as v
+ from console.archive.service import get, page
+ from console.archive.store import Store, insert, update, audit
+-from console.channels import shared_inbox
+ from console.inbox.model import decode_key
+ from . import validation
+ from .rules import transition, pending_templates
+ from .stages import STAGES, LABELS, progress, STATUSES
+ from .waiting import evaluate, inbox_lookup, seconds, OVERDUE_HOURS
++from . import operations
+ 
+ 
+ 
+ class Deals:
+     def __init__(self, path=None, *, store=None, inbox=None, lookup=None, clock=None, overdue_hours=OVERDUE_HOURS):
+         self.store = store or (Store(path) if path is not None else Store())
+-        self.inbox = inbox if inbox is not None else shared_inbox() if lookup is None else None
++        if inbox is None and lookup is None:
++            from console.channels import shared_inbox
++            inbox = shared_inbox()
++        self.inbox = inbox
+         self.lookup = lookup
+         self.clock = clock or time.time
+         self.overdue_hours = overdue_hours
+@@ -108,11 +111,13 @@
+         audit(db, who, 'remove', table, row_id, ('id',))
+ 
+     def write(self, operation, row_id, fields, who, child_id=None):
++        fields, operation_key = operations.split(fields)
+         values = validation.fields(operation, fields)
+         stamp = datetime.fromtimestamp(self.clock(), timezone.utc).isoformat(timespec='microseconds')
+         try:
+             with self.store.write() as db:
+-                return self._write(db, operation, row_id, values, who, stamp, child_id)
++                return operations.once(db, f'deals:{who}:{operation}:{row_id}:{child_id}', operation_key,
++                    fields, lambda: self._write(db, operation, row_id, values, who, stamp, child_id))
+         except sqlite3.IntegrityError:
+             raise v.Conflict('记录重复或关联、字段约束不满足') from None
+ 
+@@ -123,9 +128,18 @@
+         if op == 'create':
+             key = values.get('conversation_key')
+             customer_id = values.get('customer_party_id')
++            owner = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone() if key else None
++            owner_party = get(db, 'parties', owner['party_id']) if owner else None
++            if owner_party and owner_party['kind'] == 'customer':
++                if customer_id is not None and customer_id != owner_party['id']:
++                    raise v.Conflict('会话已属于另一位客户，请先核对客户归属再建案')
++                customer_id = owner_party['id']
++            elif values.get('customer_name'):
++                existing = db.execute("SELECT id FROM parties WHERE kind='customer' AND name=?", (values['customer_name'],)).fetchone()
++                customer_id = existing['id'] if existing else insert(db, 'parties', dict(kind='customer',
++                    name=values['customer_name'], short_name=values['customer_name'], created_at=stamp, updated_at=stamp), who)
+             if customer_id is not None and get(db, 'parties', customer_id)['kind'] != 'customer':
+                 raise v.BadRequest('客户须选择客户类型的往来单位')
+-            owner = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone() if key else None
+             party_id = owner['party_id'] if owner else None
+             if key and not owner and values.get('party_name'):
+                 existing = db.execute('SELECT id FROM parties WHERE kind=? AND name=?', (values['party_kind'], values['party_name'])).fetchone()
+@@ -148,6 +162,10 @@
+             for kind, summary in events:
+                 self._event(db, row_id, kind, summary, who, stamp)
+             self._templates(db, get(db, 'deals', row_id), who, stamp)
++            if values.get('destination_country'):
++                operations.context(db, row_id, values['destination_country'])
++            if values.get('product_name'):
++                self._write(db, 'item', row_id, dict(name=values['product_name'], qty=values['qty']), who, stamp, None)
+             return dict(ok=True, id=row_id)
+         if op == 'task_status':
+             task = get(db, 'deal_tasks', row_id)
+@@ -157,6 +175,24 @@
+                 self._event(db, task['deal_id'], 'task', label, who, stamp)
+             return dict(ok=True, id=row_id)
+         deal = get(db, 'deals', row_id)
++        if op == 'draft':
++            kind = values.get('kind')
++            if not kind:
++                raise v.BadRequest('请选择要起草的内容')
++            if kind == 'supplier_order' and deal['status'] != 'won':
++                raise v.BadRequest('请先人工确认收款，再起草采购单')
++            party_id = values.get('party_id')
++            participant = db.execute('SELECT role FROM deal_participants WHERE deal_id=? AND party_id=?', (row_id, party_id)).fetchone()
++            if not participant or participant['role'] not in ('supplier', 'forwarder', 'vendor'):
++                raise v.BadRequest('请先把供应商或货代加入这个案子')
++            key = values.get('conversation_key')
++            if key and not db.execute('SELECT 1 FROM deal_conversations WHERE deal_id=? AND party_id=? AND conversation_key=?', (row_id, party_id, key)).fetchone():
++                raise v.BadRequest('请选择该参与方在本案已关联的会话')
++            items = list(db.execute('SELECT name,qty FROM deal_items WHERE deal_id=? ORDER BY id', (row_id,)))
++            text = ('采购单草稿，请核对交期：' if kind == 'supplier_order' else '请提供新的有效报价、有效期与交期：') + '；'.join(f"{it['name']} × {it['qty'] or '待确认'}" for it in items)
++            result = operations.save_draft(db, row_id, kind, text, who, stamp, conversation_key=key)
++            self._event(db, row_id, 'system', '采购单已存演练草稿，未发送' if kind == 'supplier_order' else '询价已存演练草稿，未发送', who, stamp)
++            return result
+         if op == 'update':
+             changes, events = transition(deal, values, stamp, payment_confirmed=payment_confirmed)
+             if changes:
+@@ -229,6 +265,9 @@
+             rows = db.execute('SELECT * FROM deals' + (' WHERE id=?' if row_id is not None else ''),
+                               (row_id,) if row_id is not None else ()) if 'deals' in tables else ()
+             items = [self._view(dict(r), parties, groups, lookup, now, detail=row_id is not None) for r in rows]
++            if row_id is not None and items:
++                items[0]['destination_country'] = operations.context(db, row_id)
++                items[0]['drafts'] = operations.drafts(db, row_id)
+         if row_id is not None:
+             if not items:
+                 raise v.Missing('未找到该案子')
+--- a/console/deals/validation.py
++++ b/console/deals/validation.py
+@@ -42,7 +42,8 @@
+ 
+ 
+ FIELDS = {
+-    'create': ('title', 'customer_party_id', 'conversation_key', 'party_kind', 'party_name', 'stage'),
++    'create': ('title', 'customer_party_id', 'conversation_key', 'party_kind', 'party_name', 'stage',
++               'customer_name', 'product_name', 'qty', 'destination_country'),
+     'update': ('title', 'stage', 'status', 'value', 'currency', 'next_action', 'next_action_due', 'notes', 'lost_reason'),
+     'participant': ('party_id', 'role', 'note'),
+     'conversation': ('conversation_key', 'party_id'),
+@@ -51,6 +52,7 @@
+     'task_status': ('status',),
+     'event': ('note',),
+     'identity': ('conversation_key', 'party_id', 'confirm'),
++    'draft': ('kind', 'party_id', 'conversation_key'),
+     'participant_remove': (), 'conversation_remove': (), 'item_remove': (),
+ }
+ 
+@@ -67,6 +69,8 @@
+             result[name] = v.choice(value, KEYS)
+         elif name == 'status':
+             result[name] = v.choice(value, ('open', 'done', 'skipped') if operation == 'task_status' else STATUSES)
++        elif name == 'kind':
++            result[name] = v.choice(value, ('supplier_order', 'price_request'))
+         elif name in ('party_kind', 'role'):
+             result[name] = v.choice(value, v.PARTY_KINDS)
+         elif name in ('value', 'target_price'):
+@@ -79,8 +83,10 @@
+             result[name] = v.integer(value) if value else None
+         elif name == 'confirm':
+             result[name] = v.choice(value, ('0', '1')) == '1'
+-        elif name == 'party_name':
++        elif name in ('party_name', 'customer_name'):
+             result[name] = v.party_name(value) if value else None
++        elif name in ('product_name', 'destination_country'):
++            result[name] = v.text(value, 200, True)
+         else:
+             limit = {'title': 500, 'name': 200, 'next_action': 500, 'lost_reason': 200,
+                      'note': 500 if operation == 'event' else 2000, 'notes': 2000}[name]
+@@ -93,6 +99,11 @@
+         raise v.BadRequest('请填写必填字段')
+     if operation == 'create':
+         result.setdefault('stage', 'inquiry')
++        if result.get('customer_name') and result.get('customer_party_id'):
++            raise v.BadRequest('请选择已有客户或填写新客户名称')
++        if any(k in raw for k in ('product_name', 'destination_country', 'qty')):
++            if not all(result.get(k) for k in ('product_name', 'destination_country', 'qty')):
++                raise v.BadRequest('请填写产品、数量和目的国')
+         if bool(result.get('party_kind')) != bool(result.get('party_name')):
+             raise v.BadRequest('往来单位类型与名称须一起填写')
+         if result.get('party_name') and not result.get('conversation_key'):
+--- a/console/fulfil/service.py
++++ b/console/fulfil/service.py
+@@ -11,6 +11,7 @@
+ from console.archive import validation as v
+ from console.archive.store import ARCHIVE_PATH, Store
+ from console.deals.service import Deals
++from console.deals import operations
+ from .common import iso_day, record
+ from . import issues, nodes, payments, reorder
+ 
+@@ -26,23 +27,28 @@
+         return iso_day(self.today())
+ 
+     def write(self, operation, row_id, fields, who, child_id=None):
++        fields, operation_key = operations.split(fields)
+         stamp = datetime.fromtimestamp(self.clock(), timezone.utc).isoformat(timespec='microseconds')
+         try:
+             with self.store.write() as db:
+-                if operation in ('payment_create', 'payment_confirm', 'payment_void'):
+-                    fn = {'payment_create': payments.create, 'payment_confirm': payments.confirm, 'payment_void': payments.void}[operation]
+-                    return fn(db, row_id, fields, who, stamp, self.deals)
+-                if operation in ('node_update', 'node_update_id'):
+-                    if operation == 'node_update_id':
+-                        node = record(db, 'fulfilment_nodes', row_id)
+-                        row_id, child_id = node['deal_id'], node['node']
+-                    return nodes.write(db, row_id, child_id, fields, who, stamp, self.deals, self.day())
+-                fn = {'issue_create': issues.create, 'issue_update': issues.change, 'issue_note': issues.note, 'reorder': reorder.copy}.get(operation)
+-                if fn is None:
+-                    raise v.BadRequest('操作无效')
+-                return fn(db, row_id, fields, who, stamp, self.deals)
++                return operations.once(db, f'fulfil:{who}:{operation}:{row_id}:{child_id}', operation_key,
++                    fields, lambda: self._dispatch(db, operation, row_id, fields, who, stamp, child_id))
+         except sqlite3.IntegrityError:
+             raise v.Conflict('记录重复或关联、字段约束不满足') from None
++
++    def _dispatch(self, db, operation, row_id, fields, who, stamp, child_id):
++        if operation in ('payment_create', 'payment_confirm', 'payment_void'):
++            fn = {'payment_create': payments.create, 'payment_confirm': payments.confirm, 'payment_void': payments.void}[operation]
++            return fn(db, row_id, fields, who, stamp, self.deals)
++        if operation in ('node_update', 'node_update_id'):
++            if operation == 'node_update_id':
++                node = record(db, 'fulfilment_nodes', row_id)
++                row_id, child_id = node['deal_id'], node['node']
++            return nodes.write(db, row_id, child_id, fields, who, stamp, self.deals, self.day())
++        fn = {'issue_create': issues.create, 'issue_update': issues.change, 'issue_note': issues.note, 'reorder': reorder.copy}.get(operation)
++        if fn is None:
++            raise v.BadRequest('操作无效')
++        return fn(db, row_id, fields, who, stamp, self.deals)
+ 
+     def read(self, resource, params=None, row_id=None):
+         params = params or {}
+--- a/console/quotes/service.py
++++ b/console/quotes/service.py
+@@ -15,6 +15,7 @@
+ from console.archive.validity import (current_offer, current_quote, route_key, quote_state,
+                                       validity, remaining_days)
+ from console.deals.service import Deals
++from console.deals import operations
+ from . import validation
+ from .calc import compute
+ from .freight import calculate, PACKING
+@@ -418,14 +419,21 @@
+                     raise v.BadRequest('该产品已计入配套费用，不能再计入产品成本；请保留一种计价方式')
+ 
+     def write(self, operation, row_id, fields, who, child_id=None):
+-        values = validation.fields(operation, fields)
++        fields, operation_key = operations.split(fields)
++        if operation == 'draft':
++            v.whitelist(fields, ('kind', 'lang'))
++            values = dict(kind=v.choice(fields.get('kind'), ('quote', 'pi')),
++                          lang=v.choice(fields.get('lang', 'zh'), ('zh', 'en')))
++        else:
++            values = validation.fields(operation, fields)
+         if operation == 'native':
+             return self._native(row_id, values, who)
+         stamp = datetime.fromtimestamp(self.clock(), timezone.utc).isoformat(timespec='microseconds')
+         today = self.day()
+         try:
+             with self.store.write() as db:
+-                return self._write(db, operation, row_id, values, who, stamp, today, child_id)
++                return operations.once(db, f'quotes:{who}:{operation}:{row_id}:{child_id}', operation_key,
++                    fields, lambda: self._write(db, operation, row_id, values, who, stamp, today, child_id))
+         except sqlite3.IntegrityError:
+             raise v.Conflict('记录重复或关联、字段约束不满足') from None
+ 
+@@ -446,6 +454,8 @@
+                     initial.update(fx_x10000=last['fx_x10000'], fx_source=last['fx_source'])
+             elif deal.get('customer_party_id'):
+                 initial['destination_country'] = get(db, 'parties', deal['customer_party_id'])['country']
++            if not last and operations.context(db, rid):
++                initial['destination_country'] = operations.context(db, rid)
+             if initial['currency'] == 'USD':
+                 initial.update(fx_x10000=int(Decimal(fx['usd_cny']) * 10000) if fx['usd_cny'] else None,
+                                fx_source=(fx['source'] + (' @ ' + str(fx['as_of']) if fx['as_of'] is not None else '')) if fx['source'] else None)
+@@ -481,10 +491,29 @@
+             self.deals.quote_event(db, rid, f"创建报价第 {initial['round_no']} 轮", who, stamp)
+             return dict(ok=True, id=new_id)
+         round = get(db, 'quote_rounds', rid)
++        if op == 'draft':
++            document = self._pi(db, round) if values['kind'] == 'pi' else self._document(db, round, values['lang'])[0]
++            if not document['ready']:
++                reasons = [problem['message'] for problem in document.get('blocking', [])]
++                reasons.extend(document.get('missing', []))
++                raise v.Conflict('暂不能生成草稿：' + '；'.join(reasons))
++            result = operations.save_draft(db, round['deal_id'], values['kind'], document['text'], who, stamp, quote_id=rid)
++            deal = get(db, 'deals', round['deal_id'])
++            latest = db.execute('SELECT MAX(round_no) FROM quote_rounds WHERE deal_id=?', (round['deal_id'],)).fetchone()[0]
++            if deal['status'] == 'open' and round['round_no'] == latest:
++                amount = sum(line['qty'] * line['sell_unit_minor'] for line in children(db, 'quote_lines', rid))
++                if amount > v.MAX_FEN:
++                    raise v.BadRequest('本轮报价总额超出案子金额范围，请核对数量和售价')
++                self.deals._write(db, 'update', round['deal_id'], dict(value_fen=amount, currency=round['currency']), who, stamp, None)
++            self.deals.quote_event(db, round['deal_id'], 'PI 已存演练草稿，未发送' if values['kind'] == 'pi' else '报价单已存演练草稿，未发送', who, stamp)
++            return result
+         if op not in ('negotiation','status') and round['status'] != 'draft' and not (op == 'update' and set(values) <= {'notes'}):
+             raise v.Conflict(LOCKED)
+         if op in ('terms','review'):
+-            return self._document_write(db, round, op, values, who, stamp)
++            result = self._document_write(db, round, op, values, who, stamp)
++            if not result.get('reused'):
++                self.deals.quote_event(db, round['deal_id'], '确认本轮付款与交付条件' if op == 'terms' else '本轮报价文本已审阅', who, stamp)
++            return result
+         if op == 'update':
+             if values.get('currency', round['currency']) != round['currency']:
+                 if 'fx_x10000' not in values:
+--- a/console/v3_deals_api.py
++++ b/console/v3_deals_api.py
+@@ -4,12 +4,17 @@
+ 
+ from .archive.store import ARCHIVE_PATH
+ from .archive.validation import BadRequest, Missing, Conflict
+-from .channels import shared_inbox
+ from .deals.service import Deals
+ from .deals.validation import identity, parameters
+ from .inbox.http import authorised, forbidden, recheck, response
+ from .inbox.store import INBOUND_PATH
+ from .v3_archive_api import form_fields
++
++
++def shared_inbox(*args, **kwargs):
++    # Keep injected/offline services independent of optional channel packages.
++    from .channels import shared_inbox as factory
++    return factory(*args, **kwargs)
+ 
+ 
+ def build(app_module, archive_path=ARCHIVE_PATH, *, service=None, inbox=None, lookup=None, clock=None,
+@@ -63,6 +68,7 @@
+         ('deals/{id}/items', None, 'item'), ('deals/{id}/items/{iid}/remove', None, 'item_remove'),
+         ('deals/{id}/tasks', None, 'task'), ('deal-tasks/{id}/status', None, 'task_status'),
+         ('deals/{id}/events', None, 'event'),
++        ('deals/{id}/drafts', None, 'draft'),
+         ('identities/lookup', 'identity_lookup', None), ('identities', None, 'identity'),
+     ]
+     return [Route('/api/v1/' + path, handler(resource, operation), methods=['POST' if operation else 'GET'],
+--- a/console/v3_fulfil_api.py
++++ b/console/v3_fulfil_api.py
+@@ -78,7 +78,7 @@
+                     if media_type and media_type != 'application/x-www-form-urlencoded':
+                         raise v.BadRequest('请使用 URL 编码表单提交')
+                     fields = await form_fields(request)
+-                    v.whitelist(fields, FIELDS[operation or 'issue_draft'])
++                    v.whitelist(fields, FIELDS[operation or 'issue_draft'] + (('operation_key',) if operation else ()))
+                     # A form/body may suspend; recheck again immediately before
+                     # the business call so a revoked login cannot confirm money.
+                     if not await recheck(request):
+--- a/console/v3_quotes_api.py
++++ b/console/v3_quotes_api.py
+@@ -30,6 +30,8 @@
+                 child_id = next((identity(str(path[k])) for k in ('lid','cid') if k in path), None)
+                 if operation:
+                     fields = await form_fields(request)
++                    if not await recheck(request):
++                        return forbidden(app_module, request)
+                     payload = await run_in_threadpool(service.write, operation, row_id, fields,
+                         request.state.password_principal.username, child_id)
+                 else:
+@@ -66,6 +68,7 @@
+         ('quotes/{id}/text','text',None), ('fx','fx',None),
+         ('quotes/{id}/terms',None,'terms'), ('quotes/{id}/native',None,'native'),
+         ('quotes/{id}/review',None,'review'), ('quotes/{id}/pi','pi',None),
++        ('quotes/{id}/drafts',None,'draft'),
+     ]
+     return [Route('/api/v1/' + path, handler(resource, operation), methods=['POST' if operation else 'GET'],
+                   name='quotes_' + (operation or resource)) for path, resource, operation in definitions]
+--- /dev/null
++++ b/console/deals/operations.py
+@@ -0,0 +1,66 @@
++"""Local transaction receipts and draft-only outbox. No transport dependencies.
++
++Extension tables are created only inside an authorised write transaction. They
++do not alter the deployed archive migration versions or the channel outbox.
++"""
++import hashlib
++import json
++import re
++
++from console.archive.validation import BadRequest, Conflict
++
++
++def split(fields):
++    raw = dict(fields)
++    key = raw.pop('operation_key', None)
++    if key is not None and not re.fullmatch(r'[A-Za-z0-9-]{8,100}', key):
++        raise BadRequest('操作编号无效，请重新打开表单')
++    return raw, key
++
++
++def once(db, scope, key, payload, action):
++    if key is None:  # Existing callers retain their published form contract.
++        return action()
++    db.execute('CREATE TABLE IF NOT EXISTS deal_operation_receipts ('
++               'scope TEXT NOT NULL, operation_key TEXT NOT NULL, digest TEXT NOT NULL, '
++               'result TEXT NOT NULL, PRIMARY KEY(scope,operation_key))')
++    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
++    old = db.execute('SELECT digest,result FROM deal_operation_receipts WHERE scope=? AND operation_key=?',
++                     (scope, key)).fetchone()
++    if old:
++        if old['digest'] != digest:
++            raise Conflict('同一次操作的内容已改变，请先重新读取核对结果')
++        return json.loads(old['result'])
++    result = action()
++    db.execute('INSERT INTO deal_operation_receipts VALUES(?,?,?,?)',
++               (scope, key, digest, json.dumps(result, ensure_ascii=False)))
++    return result
++
++
++def context(db, deal_id, country=None):
++    exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='deal_operation_context'").fetchone()
++    if country is not None:
++        db.execute('CREATE TABLE IF NOT EXISTS deal_operation_context ('
++                   'deal_id INTEGER PRIMARY KEY REFERENCES deals(id), destination_country TEXT NOT NULL)')
++        db.execute('INSERT INTO deal_operation_context VALUES(?,?)', (deal_id, country))
++        return country
++    row = db.execute('SELECT destination_country FROM deal_operation_context WHERE deal_id=?',
++                     (deal_id,)).fetchone() if exists else None
++    return row[0] if row else None
++
++
++def save_draft(db, deal_id, kind, text, who, stamp, *, quote_id=None, conversation_key=None):
++    db.execute("CREATE TABLE IF NOT EXISTS deal_draft_outbox (id INTEGER PRIMARY KEY, "
++               "deal_id INTEGER NOT NULL REFERENCES deals(id), quote_id INTEGER, "
++               "kind TEXT NOT NULL, text TEXT NOT NULL, conversation_key TEXT, "
++               "state TEXT NOT NULL CHECK(state='draft'), mode TEXT NOT NULL CHECK(mode='dry-run'), "
++               "created_by TEXT NOT NULL, created_at TEXT NOT NULL)")
++    row = db.execute("INSERT INTO deal_draft_outbox(deal_id,quote_id,kind,text,conversation_key,state,mode,created_by,created_at) "
++                     "VALUES(?,?,?,?,?,'draft','dry-run',?,?)", (deal_id, quote_id, kind, text, conversation_key, who, stamp))
++    return dict(ok=True, id=row.lastrowid, state='draft', mode='dry-run', text=text)
++
++
++def drafts(db, deal_id):
++    exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='deal_draft_outbox'").fetchone()
++    return [dict(row) for row in db.execute('SELECT * FROM deal_draft_outbox WHERE deal_id=? ORDER BY id DESC',
++                                          (deal_id,))] if exists else []

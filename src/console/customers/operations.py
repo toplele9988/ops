@@ -1,0 +1,355 @@
+"""W4/W5 durable operations. No sender, HTTP client or production I/O at import.
+
+Uses the archive's real parties/identities/deals/products schema. Additive owned
+tables are installed explicitly (initialize) or in the first write transaction.
+Merges are reversible projection links: original FKs and notes are never erased.
+The dedicated outbox contains draft-only, dry-run rows; no send-state transition.
+"""
+from datetime import datetime, timezone
+import hashlib
+import json
+import sqlite3
+import time
+
+from console.archive import validation as v
+from console.archive.service import get, money_view, packing_ready
+from console.archive.store import Store, insert, update, audit
+from console.archive.validity import current_offer
+from console.deals.service import Deals
+
+
+SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS parties_ops_profiles (
+      party_id INTEGER PRIMARY KEY REFERENCES parties(id), tags TEXT NOT NULL DEFAULT '',
+      next_followup TEXT, updated_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS parties_ops_events (
+      id INTEGER PRIMARY KEY, party_id INTEGER NOT NULL REFERENCES parties(id),
+      at TEXT NOT NULL, summary TEXT NOT NULL, who TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS parties_ops_merges (
+      id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES parties(id),
+      target_id INTEGER NOT NULL REFERENCES parties(id), at TEXT NOT NULL,
+      who TEXT NOT NULL, undone_at TEXT, CHECK(source_id != target_id))""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS parties_ops_merge_active ON parties_ops_merges(source_id) WHERE undone_at IS NULL",
+    """CREATE TABLE IF NOT EXISTS parties_outbox (
+      id INTEGER PRIMARY KEY, party_id INTEGER NOT NULL REFERENCES parties(id),
+      conversation_key TEXT NOT NULL, purpose TEXT NOT NULL, text TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'draft' CHECK(state='draft'),
+      dry_run INTEGER NOT NULL DEFAULT 1 CHECK(dry_run=1),
+      reviewed_at TEXT, created_at TEXT NOT NULL, created_by TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS parties_ops_requests (
+      request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, who TEXT NOT NULL,
+      result_json TEXT NOT NULL)""",
+)
+
+
+def install(db):
+    for statement in SCHEMA:
+        db.execute(statement)
+
+
+def parameters(params):
+    v.whitelist(params, {'kind', 'q', 'country', 'channel', 'contact', 'open', 'sort', 'page', 'page_size'})
+    for key in params:
+        if hasattr(params, 'getlist') and len(params.getlist(key)) != 1:
+            raise v.BadRequest('同一条件只能填写一次')
+    result = {k: v.text(params.get(k, ''), 200) or '' for k in ('q', 'country', 'channel')}
+    result.update(kind=v.choice(params.get('kind', 'customer'), v.PARTY_KINDS),
+        contact=v.choice(params.get('contact', ''), ('', '7', '30', 'stale', 'never')),
+        open=v.choice(params.get('open', ''), ('', 'yes', 'no')),
+        sort=v.choice(params.get('sort', 'recent'), ('recent', 'oldest', 'name', 'tasks', 'followup')),
+        page=v.integer(params.get('page', '1')),
+        page_size=v.integer(params.get('page_size', '40'), maximum=100))
+    return result
+
+
+class Parties:
+    def __init__(self, path=None, *, store=None, inbox, clock=None):
+        self.store = store or (Store(path, target_version=9) if path is not None else Store(target_version=9))
+        self.inbox = inbox
+        self.clock = clock or time.time
+
+    def initialize(self):
+        with self.store.write() as db:
+            install(db)
+
+    def stamp(self):
+        return datetime.fromtimestamp(self.clock(), timezone.utc).isoformat(timespec='microseconds')
+
+    @staticmethod
+    def tables(db):
+        return {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    @staticmethod
+    def event(db, pid, summary, who, stamp):
+        db.execute('INSERT INTO parties_ops_events(party_id,at,summary,who) VALUES(?,?,?,?)',
+                   (pid, stamp, summary, who))
+        audit(db, who, 'parties_operation', 'parties', pid, ('operation',))
+
+    def read(self, resource, params=None, row_id=None):
+        params = params or {}
+        conversations = self.inbox.read()['conversations']
+        with self.store.read() as db:
+            tables = self.tables(db)
+            def rows(table):
+                return [dict(r) for r in db.execute('SELECT * FROM ' + table)] if table in tables else []
+            parties = rows('parties')
+            identities = rows('identities')
+            owners = {r['conversation_key']: r['party_id'] for r in identities}
+            merges = rows('parties_ops_merges')
+            active = {r['source_id']: r['target_id'] for r in merges if not r['undone_at']}
+            profiles = {r['party_id']: r for r in rows('parties_ops_profiles')}
+            if resource == 'conversations':
+                return {'items': [dict(key=c['key'], channel=c['channel'], name=c['buyer_name'],
+                    party_id=active.get(owners.get(c['key']), owners.get(c['key']))) for c in conversations.values()]}
+            deals, participants, tasks = rows('deals'), rows('deal_participants'), rows('deal_tasks')
+            events = rows('parties_ops_events')
+            result = []
+            for p in parties:
+                if p['id'] in active or (row_id is None and p['status'] != 'active'):
+                    continue
+                if row_id is not None and p['id'] != row_id:
+                    continue
+                ids = {p['id']} | {sid for sid, tid in active.items() if tid == p['id']}
+                links = [i for i in identities if i['party_id'] in ids]
+                keys = {i['conversation_key'] for i in links}
+                # Legacy conversation_ref is only used when it is a real inbox key.
+                keys |= {r['conversation_ref'] for r in parties if r['id'] in ids and
+                    r['conversation_ref'] in conversations and
+                    (r['conversation_ref'] not in owners or owners[r['conversation_ref']] in ids)}
+                convs = [conversations[k] for k in keys if k in conversations]
+                linked_deals = [d for d in deals if d['customer_party_id'] in ids or any(
+                    a['deal_id'] == d['id'] and a['party_id'] in ids for a in participants)]
+                open_ids = {d['id'] for d in linked_deals if d['status'] in ('open', 'paused')}
+                task_count = sum(t['status'] == 'open' and t['deal_id'] in open_ids for t in tasks)
+                waiting = sum(bool(c.get('waiting_reply')) for c in convs)
+                profile = profiles.get(p['id'], {})
+                last = max((c.get('last_seen') or 0 for c in convs), default=0) or None
+                item = dict(id=p['id'], kind=p['kind'], name=p['name'], country=p.get('country') or '',
+                    notes=p['notes'] or '', tags=profile.get('tags', ''), next_followup=profile.get('next_followup'),
+                    last_contact=last, channels=sorted({c['channel'] for c in convs}),
+                    todo_count=task_count + waiting, open_deals=len(open_ids))
+                if row_id is not None:
+                    timeline = []
+                    # detail() loads the complete archived message history, not list previews.
+                    for c in convs:
+                        full = self.inbox.detail(c['key'])
+                        for index, m in enumerate((full or c).get('messages', ())):
+                            timeline.append(dict(id=f"{c['key']}:{index}", at=m['sent_at'],
+                                summary=m.get('text', ''), channel=c['channel'], conversation_key=c['key'],
+                                role=m.get('role', 'unknown')))
+                    timeline += [dict(id=f"event:{e['id']}", at=e['at'], summary=e['summary'], channel='内部记录')
+                                 for e in events if e['party_id'] in ids]
+                    def timestamp(e):
+                        at = e['at']
+                        return at if isinstance(at, (int, float)) else datetime.fromisoformat(at).timestamp()
+                    item.update(identities=[dict(key=k, channel=conversations[k]['channel'],
+                        name=conversations[k]['buyer_name']) if k in conversations else dict(key=k, channel='未知', name='会话暂不可读') for k in sorted(keys)],
+                        timeline=sorted(timeline, key=timestamp, reverse=True), deals=linked_deals,
+                        merges=[dict(m, source_name=next(r['name'] for r in parties if r['id'] == m['source_id']))
+                                for m in merges if m['target_id'] == p['id']],
+                        merged_profiles=[dict(name=r['name'], notes=r['notes'] or '',
+                            tags=profiles.get(r['id'], {}).get('tags', '')) for r in parties if r['id'] in ids - {p['id']}],
+                        terms=[t for t in rows('terms') if t['party_id'] in ids],
+                        drafts=[d for d in rows('parties_outbox') if d['party_id'] in ids])
+                    products = [r for r in rows('products') if r['supplier_id'] in ids and r['status'] != 'hidden'
+                                and not any(m['product_id'] == r['id'] for m in rows('product_merges'))]
+                    item['products'] = []
+                    for product in products:
+                        offers = [o for o in rows('offers') if o['product_id'] == product['id']]
+                        offer = current_offer(offers)
+                        state = json.loads(product['field_state_json'])
+                        fields = ('carton_l_cm', 'carton_w_cm', 'carton_h_cm', 'gross_kg', 'units_per_carton')
+                        verified = packing_ready(product) and all(state.get(f, {}).get('state') == 'confirmed' for f in fields)
+                        item['products'].append(dict(product, verified=verified, packing_ready=packing_ready(product),
+                            current_offer=money_view(offer, datetime.fromtimestamp(self.clock(), timezone.utc).date(), offer['id']) if offer else None))
+                    pending = []
+                    for product in item['products']:
+                        if not product['verified']:
+                            pending.append(product['name'] + '：核对外箱三边、毛重、每箱数量')
+                        offer = product['current_offer']
+                        if not offer or not offer.get('usable_for_quote'):
+                            pending.append(product['name'] + '：请报最新价格并注明有效期')
+                    item['pending_questions'] = pending
+                result.append(item)
+            if row_id is not None:
+                if not result:
+                    raise v.Missing('未找到往来单位；已合并的资料请到保留客户查看')
+                return result[0]
+        countries = sorted({r['country'] for r in result if r['kind'] == params['kind'] and r['country']})
+        channels = sorted({c for r in result if r['kind'] == params['kind'] for c in r['channels']})
+        def matches(r):
+            last = r['last_contact']
+            contact = params['contact']
+            return (r['kind'] == params['kind'] and
+                (not params['q'] or params['q'].casefold() in (r['name'] + ' ' + r['tags'] + ' ' + r['notes']).casefold()) and
+                (not params['country'] or params['country'] == r['country']) and
+                (not params['channel'] or params['channel'] in r['channels']) and
+                (not params['open'] or bool(r['open_deals']) == (params['open'] == 'yes')) and
+                (not contact or (contact == 'never' and last is None) or
+                 (contact == 'stale' and last is not None and self.clock() - last > 30 * 86400) or
+                 (contact in ('7', '30') and last is not None and self.clock() - last <= int(contact) * 86400)))
+        result = [r for r in result if matches(r)]
+        sort = params['sort']
+        result.sort(key=lambda r: ((r['name'].casefold() if sort == 'name' else
+            -r['todo_count'] if sort == 'tasks' else r['next_followup'] or '9999' if sort == 'followup' else
+            r['last_contact'] or 0 if sort == 'oldest' else -(r['last_contact'] or 0)), r['id']))
+        start = (params['page'] - 1) * params['page_size']
+        return dict(items=result[start:start + params['page_size']], total=len(result), countries=countries,
+                    channels=channels, page=params['page'], page_size=params['page_size'])
+
+    def write(self, operation, row_id, fields, who):
+        fields = dict(fields)
+        token = v.text(fields.pop('request_id', ''), 100, required=True)
+        allowed = {'create': {'name', 'kind', 'country', 'conversation_key'},
+            'update': {'name', 'country', 'notes', 'tags', 'next_followup'},
+            'link': {'conversation_key'}, 'merge': {'source_id', 'confirm'},
+            'undo': {'merge_id', 'confirm'}, 'draft': {'purpose', 'conversation_key'},
+            'review': {'draft_id', 'text', 'confirm'}, 'verify': {'product_id', 'confirm'}, 'deal': {'title'},
+            'term': {'field', 'value'}, 'term-status': {'term_id', 'action'}}
+        if operation not in allowed:
+            raise v.BadRequest('操作无效')
+        v.whitelist(fields, allowed[operation])
+        fingerprint = hashlib.sha256(json.dumps([operation, row_id, fields], sort_keys=True).encode()).hexdigest()
+        stamp = self.stamp()
+        try:
+            with self.store.write() as db:
+                install(db)
+                old = db.execute('SELECT * FROM parties_ops_requests WHERE request_id=?', (token,)).fetchone()
+                if old:
+                    if old['fingerprint'] != fingerprint or old['who'] != who:
+                        raise v.Conflict('重复操作编号的内容不一致，请刷新后重试')
+                    return json.loads(old['result_json'])
+                result = self._write(db, operation, row_id, fields, who, stamp)
+                db.execute('INSERT INTO parties_ops_requests VALUES(?,?,?,?)',
+                           (token, fingerprint, who, json.dumps(result, ensure_ascii=False)))
+                return result
+        except sqlite3.IntegrityError:
+            raise v.Conflict('资料重复或关联已变化，请刷新核对') from None
+
+    def _write(self, db, op, pid, f, who, stamp):
+        result_extra = {}
+        if op == 'create':
+            kind = v.choice(f.get('kind'), v.PARTY_KINDS)
+            name = v.text(f.get('name', ''), 200, required=True)
+            country = v.text(f.get('country', ''), 100)
+            pid = insert(db, 'parties', dict(kind=kind, name=name, country=country, created_at=stamp, updated_at=stamp), who)
+            if f.get('conversation_key'):
+                self._link(db, pid, f['conversation_key'], who, stamp)
+            message = '已新建往来单位，关联会话已归入资料'
+        else:
+            party = get(db, 'parties', pid)
+            if party['status'] != 'active' or db.execute('SELECT 1 FROM parties_ops_merges WHERE source_id=? AND undone_at IS NULL', (pid,)).fetchone():
+                raise v.Conflict('资料已停用或合并，请刷新后操作')
+            message = '已保存，已记入往来时间线'
+            if op == 'update':
+                if not f:
+                    raise v.BadRequest('请填写要保存的资料')
+                values = {k: v.text(f[k], 200 if k == 'name' else 100 if k == 'country' else 2000,
+                            required=k == 'name') for k in ('name', 'country', 'notes') if k in f}
+                if values:
+                    update(db, 'parties', pid, dict(values, updated_at=stamp), who)
+                current = db.execute('SELECT * FROM parties_ops_profiles WHERE party_id=?', (pid,)).fetchone()
+                tags = v.text(f['tags'], 300) or '' if 'tags' in f else current['tags'] if current else ''
+                due = (v.iso_date(f['next_followup']) if f['next_followup'] else None) if 'next_followup' in f else current['next_followup'] if current else None
+                db.execute('INSERT INTO parties_ops_profiles VALUES(?,?,?,?) ON CONFLICT(party_id) DO UPDATE SET tags=excluded.tags,next_followup=excluded.next_followup,updated_at=excluded.updated_at',
+                           (pid, tags, due, stamp))
+            elif op == 'link':
+                self._link(db, pid, f.get('conversation_key', ''), who, stamp)
+                message = '已关联会话，全部往来已归入时间线'
+            elif op == 'merge':
+                source_id = v.integer(f.get('source_id', ''))
+                source = get(db, 'parties', source_id)
+                if f.get('confirm') != '1' or source_id == pid or party['kind'] != 'customer' or source['kind'] != 'customer':
+                    raise v.BadRequest('合并须确认并选择另一位客户')
+                if source['status'] != 'active' or db.execute('SELECT 1 FROM parties_ops_merges WHERE undone_at IS NULL AND (source_id IN (?,?) OR target_id=?)', (pid, source_id, source_id)).fetchone():
+                    raise v.Conflict('客户已有合并记录，请先撤销后再合并')
+                cur = db.execute('INSERT INTO parties_ops_merges(source_id,target_id,at,who) VALUES(?,?,?,?)', (source_id, pid, stamp, who))
+                message = '已合并展示身份、往来和案子；原资料保留，可撤销'
+                result_extra = {'merge_id': cur.lastrowid}
+            elif op == 'undo':
+                mid = v.integer(f.get('merge_id', ''))
+                merge = db.execute('SELECT * FROM parties_ops_merges WHERE id=? AND target_id=?', (mid, pid)).fetchone()
+                if f.get('confirm') != '1' or not merge:
+                    raise v.BadRequest('请确认要撤销的合并记录')
+                db.execute('UPDATE parties_ops_merges SET undone_at=COALESCE(undone_at,?) WHERE id=?', (stamp, mid))
+                message = '已撤销合并，两位客户恢复独立展示；原身份和案子归属保留'
+            elif op == 'draft':
+                purpose = v.choice(f.get('purpose'), ('followup', 'inquiry', 'materials'))
+                if (party['kind'] == 'customer') != (purpose == 'followup'):
+                    raise v.BadRequest('请选择与往来单位相符的消息用途')
+                key = f.get('conversation_key', '')
+                self._owned(db, pid, key)
+                subjects = [r[0] for r in db.execute("SELECT name FROM products WHERE supplier_id=? AND status!='hidden'", (pid,))]
+                text = ('您好，想跟进一下您的采购需求，请问产品、数量和交货时间是否有更新？' if purpose == 'followup' else
+                    '您好，请提供以下产品的最新单价、币种、起订量、交期和报价有效期：' + ('、'.join(subjects) or '待确认产品') if purpose == 'inquiry' else
+                    '您好，请补充并确认以下产品的外箱三边尺寸（cm）、整箱毛重（kg）、每箱数量及对应型号：' + ('、'.join(subjects) or '待确认产品'))
+                cur = db.execute('INSERT INTO parties_outbox(party_id,conversation_key,purpose,text,created_at,created_by) VALUES(?,?,?,?,?,?)', (pid, key, purpose, text, stamp, who))
+                result_extra = {'draft_id': cur.lastrowid, 'text': text, 'dry_run': True, 'state': 'draft'}
+                message = '已存入演练发件箱草稿，等待人工核对，尚未发送'
+            elif op == 'review':
+                did = v.integer(f.get('draft_id', ''))
+                text = v.text(f.get('text', ''), 2000, required=True)
+                draft = db.execute('SELECT * FROM parties_outbox WHERE id=? AND party_id=?', (did, pid)).fetchone()
+                if not draft or f.get('confirm') != '1':
+                    raise v.BadRequest('请确认本单位的演练草稿')
+                self._owned(db, pid, draft['conversation_key'])
+                db.execute('UPDATE parties_outbox SET text=?,reviewed_at=? WHERE id=?', (text, stamp, did))
+                message = '人工核对已记录；演练草稿仍未发送'
+                result_extra = {'draft_id': did, 'dry_run': True, 'state': 'draft'}
+            elif op == 'verify':
+                product_id = v.integer(f.get('product_id', ''))
+                product = get(db, 'products', product_id)
+                if party['kind'] != 'supplier' or product['supplier_id'] != pid or product['status'] == 'hidden' or f.get('confirm') != '1':
+                    raise v.BadRequest('请选择本供应商产品并确认已核对')
+                if db.execute('SELECT 1 FROM product_merges WHERE product_id=?', (product_id,)).fetchone() or not packing_ready(product):
+                    raise v.Conflict('资料不完整或产品已合并，请先补齐尺寸、毛重与每箱数量')
+                state = json.loads(product['field_state_json'])
+                for field in ('carton_l_cm', 'carton_w_cm', 'carton_h_cm', 'gross_kg', 'units_per_carton'):
+                    state[field] = dict(state.get(field, {}), state='confirmed', reviewed_by=who, reviewed_at=stamp)
+                update(db, 'products', product_id, dict(field_state_json=json.dumps(state), updated_at=stamp), who, 'packing_verify')
+                message = '外箱尺寸、毛重和每箱数量已核对，已记入产品资料'
+            elif op == 'term':
+                field = v.choice(f.get('field'), v.TERM_FIELDS)
+                value = v.text(f.get('value', ''), 2000, required=True)
+                tid = insert(db, 'terms', dict(party_id=pid, field=field, value=value,
+                    status='confirmed', updated_at=stamp), who)
+                result_extra = {'term_id': tid}
+                message = '已保存合作条款，已记入往来时间线'
+            elif op == 'term-status':
+                tid = v.integer(f.get('term_id', ''), maximum=2**63-1)
+                term = get(db, 'terms', tid)
+                if term['party_id'] != pid or term['status'] != 'suggested':
+                    raise v.Conflict('只能确认或拒绝本单位的待核对条款')
+                status = {'confirm': 'confirmed', 'reject': 'rejected'}[v.choice(f.get('action'), ('confirm', 'reject'))]
+                update(db, 'terms', tid, dict(status=status, updated_at=stamp), who)
+                message = '合作条款核对结果已保存'
+            elif op == 'deal':
+                if party['kind'] != 'customer':
+                    raise v.BadRequest('请从客户资料新建案子')
+                title = v.text(f.get('title', ''), 200, required=True)
+                deals = Deals(store=self.store, lookup={})
+                result = deals._write(db, 'create', None, dict(title=title, customer_party_id=pid, stage='inquiry'), who, stamp, None)
+                ids = {pid} | {r[0] for r in db.execute('SELECT source_id FROM parties_ops_merges WHERE target_id=? AND undone_at IS NULL', (pid,))}
+                for row in db.execute('SELECT conversation_key,party_id FROM identities').fetchall():
+                    if row['party_id'] in ids:
+                        deals._link(db, result['id'], row['conversation_key'], row['party_id'], who, stamp)
+                result_extra = {'deal_id': result['id']}
+                message = '已建案子并生成询盘待办，客户会话已带入案子'
+        self.event(db, pid, message, who, stamp)
+        return dict(ok=True, id=pid, message=message, **result_extra)
+
+    def _link(self, db, pid, key, who, stamp):
+        key = v.text(key, 8192, required=True)
+        c = self.inbox.read()['conversations'].get(key)
+        if not c:
+            raise v.Missing('未找到现有会话，请先去商机沟通检查')
+        Deals(store=self.store, lookup={})._identity(db, key, pid, who, stamp)
+
+    def _owned(self, db, pid, key):
+        ids = {pid} | {r[0] for r in db.execute('SELECT source_id FROM parties_ops_merges WHERE target_id=? AND undone_at IS NULL', (pid,))}
+        owner = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone()
+        legacy = db.execute('SELECT id FROM parties WHERE conversation_ref=?', (key,)).fetchall()
+        if not key or not ((owner and owner[0] in ids) or (not owner and any(r[0] in ids for r in legacy))):
+            raise v.Conflict('请先关联本单位的会话，再起草消息')
+        if key not in self.inbox.read()['conversations']:
+            raise v.Missing('会话暂不可读，请到商机沟通检查')

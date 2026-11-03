@@ -1,0 +1,11 @@
+--- a/console/v3.py
++++ b/console/v3.py
+@@ -42,6 +42,8 @@
+     routes += v3_inbox_api.build(app_module)
+     routes += v3_customers_api.build(app_module)
+     routes += v3_channels_api.build(app_module)
++    from . import v3_pipeline_api
++    routes += v3_pipeline_api.build(app_module)
+     routes += v3_outbox_api.build(app_module)
+     routes += v3_media_api.build(app_module)
+     routes += v3_kb_api.build(app_module)

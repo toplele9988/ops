@@ -1,0 +1,13 @@
+.ops-form { display: grid; gap: 12px; margin-top: 16px; }
+.ops-form label { display: grid; gap: 6px; min-width: 0; }
+.ops-form input, .ops-form select, .ops-form textarea { width: 100%; min-width: 0; }
+.ops-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ops-feedback { padding: 10px 14px; border: 1px solid var(--green); border-radius: 8px; margin: 10px 0; }
+.ops-card { display: grid; gap: 8px; }
+.ops-card .deal-card { border: 0; padding: 0; box-shadow: none; }
+.ops-column-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 12px; }
+.ops-node { display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--sep); flex-wrap: wrap; }
+.ops-node.overdue { border-left: 4px solid var(--red); color: var(--red); }
+.ops-node-main { min-width: 0; flex: 1 1 180px; overflow-wrap: anywhere; }
+.ops-timeline { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .ops-actions .btn { min-height: 42px; } .ops-form .sheet-actions { flex-wrap: wrap; } .ops-node .btn { min-height: 42px; } }

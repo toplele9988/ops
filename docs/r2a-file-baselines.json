@@ -1,0 +1,118 @@
+{
+  "note": "仅开发快照文件基线，不代表现场生产文件SHA；部署前由总指挥只读核对现场及现有版本。快照无.git元数据。",
+  "modified": {
+    "docs/deals.md": {
+      "baseline_sha256": "94e075d09cd769c4780e2f5e2b8b3f70f393cb3785b80b6ead5ea361eedc5c9a",
+      "candidate_sha256": "4c178ff187c2153bb3f808a78ea70bb5415293bd54e0116f9b244e40ab5aaedf"
+    },
+    "docs/fulfil.md": {
+      "baseline_sha256": "1c095a74c8c040bdb96935997bb9ac53540e08d62633a3c19c3014d84f6c4d3e",
+      "candidate_sha256": "70e7876d1e54dd982b13a85d4da0c9061a40722d39dd17dae37a4a0f10f3e758"
+    },
+    "src/console/deals/rules.py": {
+      "baseline_sha256": "b58c2b29b25591e4ed336d0d6afc71a193552d9cc855190fcfa7863275ff537e",
+      "candidate_sha256": "ec8622c4a1567d79aafb80b4e1dea137976d3f0af9b0f921617a16ed30b992db"
+    },
+    "src/console/deals/service.py": {
+      "baseline_sha256": "18fc95ca5e1e1e7746b32b66a8dc575b27befb5ce0dde4e2cf21cf3c4e85630f",
+      "candidate_sha256": "cffa9f48c38e7ac23e580459432295abbbe97784d3a8577402eeabadaf041f17"
+    },
+    "src/console/fulfil/nodes.py": {
+      "baseline_sha256": "4ca06acfeab82b9ae9a7d3cc611c54e43f02d7bbc59cdbdc326fa72effa077d1",
+      "candidate_sha256": "fbda20043b2f163cddd82681fcfa69a3e776ba3ecdf574462de6742ead2c5a65"
+    },
+    "src/console/fulfil/payments.py": {
+      "baseline_sha256": "1e397ee1dcb0979bd71872269477dc9c9b8c8ded4a88953f64d06d36e29e691a",
+      "candidate_sha256": "38cd18ad0216569cdd29815b05607382ecaedd73c5c30989dd732dc477373c28"
+    },
+    "src/console/fulfil/reorder.py": {
+      "baseline_sha256": "54aab66fc74db1fe9c32e5017808820abbc5364c4d33d8dbdfcc44867cd21e03",
+      "candidate_sha256": "8047cf328a4e0fb722e29d3e7db61055635aa8281639175f46473204527d7396"
+    },
+    "src/console/v3_deals_api.py": {
+      "baseline_sha256": "e6bb19b664ef26a82f8e4d792334e922ecfc9a8dbccc484d50435c8ed0cbc188",
+      "candidate_sha256": "750111434fcfb6180974921daadf49f4b8e294b539ab3fb50406d90001cdf038"
+    },
+    "tests/deals/test_api.py": {
+      "baseline_sha256": "557c79cce6bab21a113887092b7373eb3d13fe4b5188cf26633bccfff3aa77e6",
+      "candidate_sha256": "c291b22eb6ed836a1a224018177c5ca68f18695017b3852fbe918208d1febb55"
+    },
+    "tests/deals/test_rules.py": {
+      "baseline_sha256": "0de0ec90b3dcd4e1b586bcef2cc55690cadccffe5a16ebc35e02274c0697cab8",
+      "candidate_sha256": "508eb90a618606f641a84e5ac7b42ae6f83f1421c9756c90cc64b746083b77f1"
+    },
+    "tests/deals/test_service.py": {
+      "baseline_sha256": "bd9d16abaf85d2d7f62be16da57b135530ea398202a7dac1fedeff50c3e71214",
+      "candidate_sha256": "15d8b59be132ecffa94a9e67c05070056fb287cebb1d3e2e0f6a4e21b2a6459e"
+    },
+    "tests/fulfil/conftest.py": {
+      "baseline_sha256": "2696489891deb666bcb7e83d2a3ca4e24ec13135ea56f7ae7975735dca07d344",
+      "candidate_sha256": "d52eac79a4aaf1064eac6b7842f11c60149d49e5847592e379b9b5431a861f52"
+    },
+    "tests/fulfil/test_payments.py": {
+      "baseline_sha256": "d732fa4464e6827ca64a4e37ab1d519fdd5a93c474854496dc1c5e82aa248bab",
+      "candidate_sha256": "fe20294b6e6ea363532ecad7b7b9e7bf8c2e7c110f38f1017e818403a1a8eab0"
+    },
+    "tests/fulfil/test_roles.py": {
+      "baseline_sha256": "9f0b58addb7b40eb28d50b7bd57e3d05839f998cb1c344eeeb91c9afc11fbb03",
+      "candidate_sha256": "0b1449d959425358001c2a048524df5ae3ed79e117a51a014d2fac435cdd19ca"
+    },
+    "tests/fulfil/test_service.py": {
+      "baseline_sha256": "f582c4c6bce3a759d6cb84d9662521e6c6c742215251cd13c41f3673c99faf41",
+      "candidate_sha256": "a55c7a27842edaa38db6234202384e711a4ed0cc54f8d01d370c3f9e05ad563c"
+    },
+    "tests/quotes/test_service.py": {
+      "baseline_sha256": "ebb9935d3ae48772cf39382573776fc5e7303fcfba31ae6e4a89e614c0b85c00",
+      "candidate_sha256": "18d785086698ee25c3e6d777df5c6fdf813423286eaaa28b34198c0364815319"
+    },
+    "tests/roles/conftest.py": {
+      "baseline_sha256": "0c10df4120b7ca896ccf538f974a7b76942a14718e5541ea91cdbb5206e61d1b",
+      "candidate_sha256": "3c078d2da30fee97c9aded954fcf764446b4f6894fbbbd5093a25b3ec6fd8018"
+    },
+    "tests/roles/test_roles_brief.py": {
+      "baseline_sha256": "d2350e7bbdeb14879b311d64a3fa7522603ec0db1f234b6d3c8566a4867e9cde",
+      "candidate_sha256": "7976f0e33cbed1a915cb4a8b56ef151bf01dacedb2d8653a7ed9c2d2045feb94"
+    },
+    "tests/roles/test_roles_patrol.py": {
+      "baseline_sha256": "99cedb3987391f7485d374196788ec9722b0637515ee42705cc43dcf1c18de5f",
+      "candidate_sha256": "5fdd4cac1e1a5f5d3a3166a2d975166e2fe834a333e602cdf6ce0c79f0049a47"
+    },
+    "tests/roles/test_roles_safety_cli.py": {
+      "baseline_sha256": "fa4fa27db32aa6a2c495f1b48fde5d71d44df977d69c7faef759d6ee9733c4d4",
+      "candidate_sha256": "68003d2ffca7de241fd589c2550cc2073c2c1643bceb55dd68a43d583f18578d"
+    },
+    "web/src/fulfil.ts": {
+      "baseline_sha256": "f3bf259f2dc34dded9d47be1e0e5f450c3424413075d7f7a3d0f8e5347556ca4",
+      "candidate_sha256": "a58624d68fb18d23bea797bb2aa5286c177b993b2377c08563bc7893ad594d69"
+    },
+    "web/src/pages/DealPage.tsx": {
+      "baseline_sha256": "6cbaa878d19b89620448ee9d2160f0de1dd0bf28cb071a833d884906681cfa90",
+      "candidate_sha256": "66dd6aeb5ff75c5983d908dd058ec58758c455744c884372c9e84379da82398a"
+    },
+    "web/src/pages/FulfilBoard.tsx": {
+      "baseline_sha256": "3c80ce348ba99041a8c4b483662a20de9e45be2832ff7d1fa5580f066a8d72f6",
+      "candidate_sha256": "1db146b08cd8150d8bf7bcb6e0fe074f4b3ab9d6b00866dceeeeb3bd3bcc19b9"
+    },
+    "web/src/ui/DealFulfil.tsx": {
+      "baseline_sha256": "b1b5c13ed587000325f66274ee5a0b79fbc7193758f612e067cc9baa5d6dcae9",
+      "candidate_sha256": "c366de43eb2a6560d8ed0f0d2c2a2b216a6b3bf647f6b54d5ac2b055d5517674"
+    },
+    "web/src/ui/ManualDeal.tsx": {
+      "baseline_sha256": "028eb1c99661ca7c56c6f5bab844b1b5ef48ed287d973c8b5210a2391e1301ce",
+      "candidate_sha256": "e913ee2507cb22bdbb7c91b873973f6fcdc0ece359431f3555abb1c0e3465707"
+    }
+  },
+  "new_files": [
+    "web/src/readback.ts",
+    "web/src/ui/ReadState.tsx",
+    "web/tests/r2a-flow.test.tsx",
+    "docs/r2a-delivery.md",
+    "docs/r2a-file-baselines.json"
+  ],
+  "new_file_sha256": {
+    "web/src/readback.ts": "c5c131805beb2041c4ab1e4bf12706e5342decb5cf00b77c9fab02ee0a919842",
+    "web/src/ui/ReadState.tsx": "d6522d7a06e780f0118fa4126450e2dd88a78b9357285ce3680c6b178ed74dcb",
+    "web/tests/r2a-flow.test.tsx": "2e2b78e10015ca1b2dc6f6ab7bd9dddfed06c0478e6e6b6a2d1e15b7f5f3aa17",
+    "docs/r2a-delivery.md": "e658d2d0b97bd1b0adbba33c7f36f50497287da35268d1e8f4676eba8b9ed82e"
+  }
+}

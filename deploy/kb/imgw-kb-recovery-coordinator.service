@@ -1,0 +1,30 @@
+[Unit]
+Description=知识库新增与积压恢复协调器（候选）
+After=local-fs.target
+Conflicts=imgw-kb-live.service icbu-conversation-analysis.service icbu-conversation-analysis.timer
+
+[Service]
+Type=simple
+User=imgw
+Group=imgw
+UMask=0077
+# 只含两个模型密钥的独立凭据文件；官方 DeepSeek 为直连主机，需登记为不走代理。
+EnvironmentFile=/etc/imgw/credentials/command-models.env
+Environment=NO_PROXY=api.deepseek.com no_proxy=api.deepseek.com
+# 授权复核依赖 cryptography，只在系统 python3 中可用。
+Environment=OPS_KB_COORDINATOR_PYTHON=/usr/bin/python3
+Environment=OPS_KB_BACKLOG_DB=/var/lib/imgw/ops-app/kb-recovery-coordinator/progress.sqlite3
+Environment=OPS_KB_PHYSICAL_DB=/var/lib/imgw/ops-app/kb-recovery-coordinator/physical.sqlite3
+# 安装前以已审阅配置的文件 SHA-256 替换占位符；禁止沿用空配置启动。
+ExecStart=/opt/imgw/kb-recovery-coordinator/start-coordinator.sh serve --config /etc/imgw/kb-recovery-coordinator.json --config-sha256 REPLACE_WITH_REVIEWED_CONFIG_SHA256
+Restart=no
+KillSignal=SIGTERM
+TimeoutStopSec=120
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/imgw/ops-app/kb-recovery-coordinator /var/lib/imgw/wechat/kb-model-runtime /var/lib/imgw/video_knowledge_auto/equipment /run/imgw/kb-build.lock /var/lib/imgw/icbu/conversation-analysis/analysis.sqlite3.lock /var/lib/imgw/icbu/conversation-analysis/quota-pool-20261024
+
+[Install]
+WantedBy=multi-user.target

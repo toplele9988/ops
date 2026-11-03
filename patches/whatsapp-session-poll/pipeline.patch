@@ -1,0 +1,71 @@
+--- a/src/console/pipeline/readers.py
++++ b/src/console/pipeline/readers.py
+@@ -200,9 +200,12 @@
+             WHEN 'SCAN_QR_CODE' THEN 'SCAN_QR_CODE' WHEN 'PASSKEY_REQUIRED' THEN 'PASSKEY_REQUIRED'
+             WHEN 'PASSKEY_CONFIRMATION_REQUIRED' THEN 'PASSKEY_CONFIRMATION_REQUIRED' END END,
+         CASE WHEN json_valid(raw_json) THEN CASE
++            WHEN json_extract(raw_json,'$.payload.source')='poll' THEN NULL
+             WHEN json_type(raw_json,'$.me')='object' THEN EXISTS(SELECT 1 FROM json_each(raw_json,'$.me'))
+             WHEN json_type(raw_json,'$.me') IN ('null') OR json_type(raw_json,'$.me') IS NULL THEN 0
+-            END END
++            END END,
++        CASE WHEN json_valid(raw_json) AND json_extract(raw_json,'$.payload.source')='poll'
++            THEN 'poll' ELSE 'event' END
+         FROM (SELECT received,raw_json FROM events WHERE event_type='session.status'
+             AND typeof(received) IN ('integer','real') AND received>0 AND received<=?
+             ORDER BY received DESC,rowid DESC LIMIT ?)''', (now, limit + 1)).fetchall()
+@@ -211,8 +214,9 @@
+     result = dict(total=len(rows), last_seen_at=rows[0][0] if rows else None,
+                   count_1h=None, count_24h=None, hourly=None, invalid_timestamps=0,
+                   session_status=rows[0][1] if rows else None,
++                  status_source=rows[0][3] if rows else None,
+                   has_me=bool(rows[0][2]) if rows and rows[0][2] is not None else None,
+-                  last_working_at=next((at for at, state, _ in rows if state == 'WORKING'), None),
++                  last_working_at=next((at for at, state, _, source in rows if state == 'WORKING'), None),
+                   non_working_since=None, sample_limit=limit, sampled_events=len(rows),
+                   sample_truncated=truncated, restart_storm=None)
+ 
+@@ -220,16 +224,16 @@
+         return not truncated or rows[-1][0] < now - seconds
+ 
+     for name, seconds in (('1h', 3600), ('24h', 86400)):
+-        count = sum(state == 'FAILED' and at >= now - seconds for at, state, _ in rows)
+-        valid = not any(state is None and at >= now - seconds for at, state, _ in rows)
++        count = sum(state == 'FAILED' and source == 'event' and at >= now - seconds for at, state, _, source in rows)
++        valid = not any(state is None and at >= now - seconds for at, state, _, source in rows)
+         result['failed_count_' + name] = count if rows and complete(seconds) and valid else None
+         result['failed_count_' + name + '_lower_bound'] = count
+-    if rows and complete(600) and not any(state is None and at >= now - 600 for at, state, _ in rows):
+-        result['restart_storm'] = (sum(state == 'FAILED' and at >= now - 600 for at, state, _ in rows) >= 20
+-                                   and not any(state == 'WORKING' and at >= now - 600 for at, state, _ in rows))
++    if rows and complete(600) and not any(state is None and at >= now - 600 for at, state, _, source in rows):
++        result['restart_storm'] = (sum(state == 'FAILED' and source == 'event' and at >= now - 600 for at, state, _, source in rows) >= 20
++                                   and not any(state == 'WORKING' and source == 'event' and at >= now - 600 for at, state, _, source in rows))
+     if rows and rows[0][1] not in (None, 'WORKING'):
+         since = rows[0][0]
+-        for at, state, _ in rows:
++        for at, state, _, source in rows:
+             if state in (None, 'WORKING'):
+                 break
+             since = at
+--- a/src/console/pipeline/service.py
++++ b/src/console/pipeline/service.py
+@@ -63,7 +63,8 @@
+     if item['session_status'] == 'WORKING':
+         if now - item['last_seen_at'] > config['whatsapp_session_max_age_seconds']:
+             return 'unavailable', '最后记录为已登录可用，但状态记录已经太旧，需重新核对当前登录状态。', NEXT['whatsapp_session']
+-        return 'ok', '最近记录的 WhatsApp 会话已登录可用；本项不是实时在线探测。', '继续观察；有正常业务消息时核对收件箱是否到达。'
++        evidence = '最近一次只读轮询确认 WhatsApp 会话已登录可用；这是轮询时的状态。' if item.get('status_source') == 'poll' else '最近记录的 WhatsApp 会话已登录可用；本项不是实时在线探测。'
++        return 'ok', evidence, '继续观察；有正常业务消息时核对收件箱是否到达。'
+     duration = now - item['non_working_since']
+     item['effective_age_seconds'] = duration
+     stopped = item['restart_storm'] is True or duration > config['thresholds']['whatsapp_session']['interrupted_seconds']
+@@ -204,7 +205,7 @@
+                 item['notes'].append('只反映桥接服务仍在归档事件；包含会话状态事件，不算消息到达，也不参与渠道健康汇总。')
+             if key == 'whatsapp_session':
+                 item['session_status_label'] = SESSION_LABELS.get(item.get('session_status'), '未知')
+-                item['notes'].append('只读最近的会话状态及是否有登录身份；状态事件不计为消息到达。')
++                item['notes'].append('只读最近的会话状态及其来源；轮询不计为消息到达或失败事件次数。')
+                 if item.get('sample_truncated'):
+                     item['notes'].append('会话事件已达到采样上限；未覆盖完整时间窗口的失败次数显示未知，历史登录时间也可能在采样之外。')
+             if not key.startswith('alibaba_'):

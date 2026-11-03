@@ -1,0 +1,11 @@
+# R4-A 2026-11-01 只读核对；部署前再次校验；不代表生产变更授权。
+ed9b37ca59520192bbd12d4adb694f5f73835d93190b3ec638eebda65b9300f2  /opt/imgw/wechat/console/pipeline/config.py
+7928ecda1107c66ce40ec772f6c2a1420cbc49e248876a0ea958a99e76757525  /opt/imgw/wechat/console/pipeline/readers.py
+03a2f7c20e4b6f35038706e39e76cca1f19049f3a9eb51089e9f206ccaa522c8  /opt/imgw/wechat/console/pipeline/service.py
+# 新增文件（基线不存在）：/opt/imgw/wechat/console/pipeline/jobs.py
+# 新增文件（基线不存在）：/opt/imgw/wechat/console/pipeline/scorecard.py
+847f8ec6ab2f881f3a9f85e7e610825f3a75bfde1295dcc1eb446c9932a94397  /opt/imgw/wechat/console/v3.py
+09945cfade1cab8bb995ec3c136d857ee359a702a6c5c278832006c76ca0aa48  /opt/imgw/wechat/console/v3_pipeline_api.py
+650b4aca5f849e31f51f50aea50d39cb127109a3da1aaf6b597924c04d321e2a  /var/lib/imgw/ops-app/dist/index.html
+00084cbef625906492bbdb26adc1382cbee1b7f1b96065fde51ca1ed52e135a1  /var/lib/imgw/ops-app/dist/assets/index-DexzxBPR.js
+46d40a003f1fbddcbd35cc818e8b4da87599df2862b1d69d83c3658da21b7f41  /var/lib/imgw/ops-app/dist/assets/index-BDQP7bns.css

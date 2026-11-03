@@ -1,0 +1,30 @@
+--- a/src/console/v3_lang_api.py
++++ b/src/console/v3_lang_api.py
+@@ -6,6 +6,7 @@
+ 
+ from .archive.validation import BadRequest, Conflict, Missing
+ from .channels import shared_inbox
++from .classify import Policy, PolicyLang
+ from .inbox.http import authorised, forbidden, recheck, response
+ from .inbox.store import INBOUND_PATH
+ from .lang import LANG_PATH, Lang
+@@ -30,7 +31,7 @@
+ 
+ def build(app_module, lang_path=LANG_PATH, *, service=None, inbox=None, runner=None,
+           clock=None, hourly_limit=None, inbound_path=INBOUND_PATH, wechat_path=None,
+-          whatsapp_config_path=None, fetch=None, stat_fn=None, group_gid=None):
++          whatsapp_config_path=None, fetch=None, stat_fn=None, group_gid=None, classify_path=None):
+     if service is None:
+         # Explicit fixture sources must not create a language database in production.
+         if Path(inbound_path) != Path(INBOUND_PATH) and Path(lang_path) == Path(LANG_PATH):
+@@ -40,6 +41,10 @@
+                 whatsapp_config_path=whatsapp_config_path, fetch=fetch, clock=clock,
+                 stat_fn=stat_fn, group_gid=group_gid)
+         service = Lang(lang_path, inbox=inbox, runner=runner, clock=clock, hourly_limit=hourly_limit)
++
++    if classify_path is None and Path(lang_path) != Path(LANG_PATH):
++        classify_path = Path(lang_path).parent / 'classify.sqlite3'
++    service = PolicyLang(service, Policy(classify_path))
+ 
+     def handler(resource=None, operation=None):
+         async def serve(request):

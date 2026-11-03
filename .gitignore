@@ -41,3 +41,9 @@ node_modules/
 session/
 sessions/
 downloads/
+
+# 供应商资料报告与其他私有运行产物
+private_out/
+
+# Local synthetic acceptance artifacts (screenshots and scratch code)
+artifacts/

@@ -1,0 +1,64 @@
+--- a/console-waha-history-raw-v1/history_index_worker.py
++++ b/console-waha-history-raw-v1/history_index_worker.py
+@@ -2,9 +2,24 @@
+ from pathlib import Path
+ sys.path.insert(0,str(Path(__file__).resolve().parent))
+ import json
+-import history_runtime
+-try:result=history_runtime.do_scan()
+-except BlockingIOError:result={'ok':True,'status':'busy'}
+-except Exception as error:result={'ok':False,'error':'index_unavailable'}
+-print(json.dumps(result,separators=(',',':')))
+-if result.get('ok') is not True:raise SystemExit(1)
++
++SAFE_ERRORS=frozenset(('runtime_changed','bge_unavailable','authorization_revoked',
++ 'index_root_invalid','index_unavailable','file_invalid','file_identity_changed',
++ 'parent_changed','binding_changed','ancestor_invalid','source_config_invalid',
++ 'source_database_invalid','source_binding_invalid','source_database_changed',
++ 'source_binding_changed','provider_url_invalid','source_session_invalid',
++ 'provider_route_invalid','provider_response_too_large','owner_config_invalid'))
++
++def main():
++ try:
++  import history_runtime
++  result=history_runtime.do_scan()
++ except BlockingIOError:result={'ok':True,'status':'busy'}
++ except Exception as error:
++  code=str(error) if type(error) is ValueError and str(error) in SAFE_ERRORS else 'index_unavailable'
++  result={'ok':False,'error':'index_unavailable','error_code':code,
++   'message':'历史索引未完成，请管理员按错误码核对依赖、登录绑定和索引目录；保留原库后再安排补跑'}
++ print(json.dumps(result,separators=(',',':'),ensure_ascii=False),flush=True)
++ return 0 if result.get('ok') is True else 1
++
++if __name__=='__main__':raise SystemExit(main())
+--- a/waha-names-refresh-v1/capture_names_worker.py
++++ b/waha-names-refresh-v1/capture_names_worker.py
+@@ -41,7 +41,24 @@
+   if (before.st_dev,before.st_ino)!=(after.st_dev,after.st_ino):raise ValueError('root_changed')
+   chats=data['chats'];return {'status':'complete','chats':len(chats),'named':sum(isinstance(x,str) for x in chats.values()),'no_messages_requested':True,'coverage_guaranteed':False}
+  finally:os.close(fd)
+-if __name__=='__main__':
+- parser=argparse.ArgumentParser();parser.add_argument('--refresh',action='store_true');args=parser.parse_args()
+- try:print(json.dumps(run(args.refresh),separators=(',',':')))
+- except Exception as e:print(json.dumps({'status':'error','type':type(e).__name__}));sys.exit(1)
++SAFE_ERRORS=frozenset(('root_changed','cache_missing','cache_exists','binding_changed',
++ 'binding_mismatch','binding_invalid','root_invalid','database_invalid','ancestor_invalid',
++ 'source_config_invalid','provider_url_invalid','source_session_invalid',
++ 'source_database_invalid','source_binding_invalid','source_database_changed',
++ 'source_binding_changed','provider_route_invalid','media_download_forbidden',
++ 'provider_response_too_large','invalid_page','name_conflict','repeated_page',
++ 'unsafe_path','unsafe_cache','unsafe_root','cache_too_large','source_empty_unverified',
++ 'cache_changed','backup_invalid','chats_invalid'))
++
++def main(argv=None):
++ parser=argparse.ArgumentParser();parser.add_argument('--refresh',action='store_true');args=parser.parse_args(argv)
++ try:result=run(args.refresh)
++ except Exception as error:
++  code=str(error) if isinstance(error,ValueError) and str(error) in SAFE_ERRORS else 'refresh_unavailable'
++  kind='ValueError' if isinstance(error,ValueError) else 'RuntimeError'
++  result={'status':'error','type':kind,'error_code':code,
++   'message':'会话名称刷新未确认完成，请保留现有缓存和备份；管理员核对登录账号、绑定和缓存后再决定下一步'}
++ print(json.dumps(result,separators=(',',':'),ensure_ascii=False),flush=True)
++ return 0 if result.get('status')=='complete' else 1
++
++if __name__=='__main__':raise SystemExit(main())

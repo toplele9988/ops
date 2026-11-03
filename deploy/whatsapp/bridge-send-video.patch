@@ -1,0 +1,29 @@
+--- a/bridge.py
++++ b/bridge.py
+@@ -94,7 +94,7 @@
+     return {'archived':True,'message_key':key,'direction':projection['direction']}
+ 
+ def send(c,kind,packet,api=waha):
+-    need(kind in ('sendText','sendFile','sendImage','sendVoice'),'send_kind_invalid')
++    need(kind in ('sendText','sendFile','sendImage','sendVoice','sendVideo'),'send_kind_invalid')
+     need(isinstance(packet,dict),'request_invalid')
+     key=packet.get('idempotency_key');need(isinstance(key,str) and re.fullmatch('[A-Za-z0-9._-]{8,120}',key),'idempotency_key_required')
+     need(packet.get('session')==c['session'],'session_mismatch')
+@@ -215,7 +215,7 @@
+     def do_POST(self):
+         try:
+             c=cfg();self.connection.settimeout(15)
+-            valid=(self.server.role=='qr' and self.path=='/qr/restart') or (self.server.role in ('webhook','api') and self.path=='/events') or (self.server.role=='api' and (self.path=='/api/recipients/bind' or re.fullmatch('/api/(sendText|sendFile|sendImage|sendVoice)',self.path)))
++            valid=(self.server.role=='qr' and self.path=='/qr/restart') or (self.server.role in ('webhook','api') and self.path=='/events') or (self.server.role=='api' and (self.path=='/api/recipients/bind' or re.fullmatch('/api/(sendText|sendFile|sendImage|sendVoice|sendVideo)',self.path)))
+             if not valid:return self.reply(404,{'error':'not_found'})
+             if self.server.role=='api' and self.path!='/events':need(self.api_auth(c),'api_auth_failed')
+             length=int(self.headers.get('Content-Length','0'));need(0<length<=MAX_BODY,'body_size_invalid')
+@@ -226,7 +226,7 @@
+             if self.server.role in ('webhook','api') and self.path=='/events':return self.reply(200,receive(c,raw,self.headers))
+             need(self.server.role=='api' and self.api_auth(c),'api_auth_failed')
+             if self.path=='/api/recipients/bind':return self.reply(200,bind_recipient(c,json.loads(raw)))
+-            match=re.fullmatch('/api/(sendText|sendFile|sendImage|sendVoice)',self.path)
++            match=re.fullmatch('/api/(sendText|sendFile|sendImage|sendVoice|sendVideo)',self.path)
+             need(match is not None,'path_not_allowed');return self.reply(200,send(c,match.group(1),json.loads(raw)))
+         except ValueError as e:
+             code=str(e);code=code if re.fullmatch('[a-z_]{3,80}',code) else 'request_invalid'

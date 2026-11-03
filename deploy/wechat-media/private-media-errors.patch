@@ -1,0 +1,167 @@
+--- a/video_knowledge/private_media_register.py
++++ b/video_knowledge/private_media_register.py
+@@ -8,6 +8,7 @@
+ 
+ import argparse
+ import contextlib
++import errno
+ import fcntl
+ import hashlib
+ import json
+@@ -25,10 +26,43 @@
+ MAX_BYTES = 128 * 1024 * 1024
+ SHA = re.compile(r'^[a-f0-9]{64}$')
+ LOCAL_FILESYSTEMS = {'ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'zfs', 'f2fs', 'jfs'}
++IO_STAGES = frozenset(('source_open', 'source_read', 'source_stat', 'output_create',
++    'output_write', 'output_sync', 'output_verify', 'output_publish', 'output_open', 'output_cleanup'))
++VALIDATION_CODES = frozenset(('unsafe_path', 'invalid_source_file', 'unsafe_blob', 'blob_changed',
++    'asset_conflict', 'observation_conflict', 'source_short_read', 'source_grew', 'source_changed',
++    'source_path_changed', 'blob_conflict', 'source_size_changed_after_preflight'))
+ 
+ 
+ class ScanInterrupted(RuntimeError):
+     """The scan cannot establish complete or stable coverage."""
++
++
++class MediaIOError(OSError):
++    """Keep the operation and errno, never a source path or exception message."""
++
++    def __init__(self, stage, number):
++        super().__init__(number, '媒体文件读写失败，请按错误阶段检查存储')
++        self.stage = stage if stage in IO_STAGES else 'unclassified'
++
++
++def io_call(stage, operation, *args, **kwargs):
++    try:
++        return operation(*args, **kwargs)
++    except OSError as error:
++        raise MediaIOError(stage, error.errno) from None
++
++
++def io_code(error):
++    reasons = {
++        errno.EACCES: 'permission_denied', errno.EPERM: 'permission_denied',
++        errno.ENOENT: 'not_found', errno.ESTALE: 'stale_handle', errno.EIO: 'io_error',
++        errno.ELOOP: 'symlink', errno.ENOTDIR: 'not_directory',
++        errno.EFBIG: 'file_too_large', errno.ENAMETOOLONG: 'name_too_long',
++        errno.EILSEQ: 'name_encoding', errno.ENOSPC: 'disk_full', errno.EDQUOT: 'quota',
++        errno.EROFS: 'read_only', errno.EMFILE: 'fd_limit', errno.ENFILE: 'fd_limit',
++    }
++    stage = error.stage if isinstance(error, MediaIOError) else 'unclassified'
++    return stage + '_' + reasons.get(error.errno, 'other_io')
+ 
+ 
+ def mount_for_path(path, *, mountinfo='/proc/self/mountinfo'):
+@@ -276,35 +310,35 @@
+ 
+ def process_one(root, out, con, rel, known, guard, check_output):
+     guard(root / rel)
+-    fd, parent = nofollow_source(root, rel)
++    fd, parent = io_call('source_open', nofollow_source, root, rel)
+     temp = None
+     try:
+-        before = os.fstat(fd)
++        before = io_call('source_stat', os.fstat, fd)
+         check_output(before.st_size)
+         # Temp belongs to this one invocation; a hash-addressed final blob is
+         # published without overwrite. No source file is opened for writing.
+-        temp_fd, temp_name = tempfile.mkstemp(prefix='.incoming-', dir=out)
++        temp_fd, temp_name = io_call('output_create', tempfile.mkstemp, prefix='.incoming-', dir=out)
+         temp = Path(temp_name)
+         digest = hashlib.sha256()
+         try:
+             with os.fdopen(temp_fd, 'wb') as dst:
+                 remaining = before.st_size
+                 while remaining:
+-                    data = os.read(fd, min(remaining, 1024 * 1024))
++                    data = io_call('source_read', os.read, fd, min(remaining, 1024 * 1024))
+                     if not data:
+                         raise ValueError('source_short_read')
+                     digest.update(data)
+-                    dst.write(data)
++                    io_call('output_write', dst.write, data)
+                     remaining -= len(data)
+-                if os.read(fd, 1):
++                if io_call('source_read', os.read, fd, 1):
+                     raise ValueError('source_grew')
+-                dst.flush()
+-                os.fsync(dst.fileno())
+-            after = os.fstat(fd)
+-            named = os.stat(Path(rel).name, dir_fd=parent, follow_symlinks=False)
++                io_call('output_write', dst.flush)
++                io_call('output_sync', os.fsync, dst.fileno())
++            after = io_call('source_stat', os.fstat, fd)
++            named = io_call('source_stat', os.stat, Path(rel).name, dir_fd=parent, follow_symlinks=False)
+             if signature(before) != signature(after) or signature(before) != signature(named):
+                 raise ValueError('source_changed')
+-            verify_fd, verify_parent = nofollow_source(root, rel)
++            verify_fd, verify_parent = io_call('source_open', nofollow_source, root, rel)
+             try:
+                 if signature(before) != signature(os.fstat(verify_fd)):
+                     raise ValueError('source_path_changed')
+@@ -322,7 +356,7 @@
+             try:
+                 os.link(temp, final, follow_symlinks=False)
+             except FileExistsError:
+-                got, n, old_blob = digest_file(final)
++                got, n, old_blob = io_call('output_verify', digest_file, final)
+                 if got != sha or n != before.st_size:
+                     raise ValueError('blob_conflict')
+                 if old_blob.st_nlink != 1:
+@@ -331,20 +365,22 @@
+                     # verified final with this run's freshly verified temp.
+                     guard(root / rel)
+                     check_output(0)
+-                    if signature(final.lstat()) != signature(old_blob):
++                    if signature(io_call('output_verify', final.lstat)) != signature(old_blob):
+                         raise ValueError('blob_changed')
+-                    os.replace(temp, final)
++                    io_call('output_publish', os.replace, temp, final)
+                     temp = None
+                     rehomed = True
++            except OSError as error:
++                raise MediaIOError('output_publish', error.errno) from None
+             else:
+-                temp.unlink()
++                io_call('output_cleanup', temp.unlink)
+                 temp = None
+-            got, n, final_info = digest_file(final)
++            got, n, final_info = io_call('output_verify', digest_file, final)
+             if got != sha or n != before.st_size or final_info.st_nlink != 1:
+                 raise ValueError('blob_conflict')
+-            dfd = os.open(out, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++            dfd = io_call('output_open', os.open, out, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+             try:
+-                os.fsync(dfd)
++                io_call('output_sync', os.fsync, dfd)
+             finally:
+                 os.close(dfd)
+             guard(root / rel)
+@@ -362,7 +398,7 @@
+         finally:
+             if temp is not None:
+                 with contextlib.suppress(FileNotFoundError):
+-                    temp.unlink()
++                    io_call('output_cleanup', temp.unlink)
+     finally:
+         os.close(fd)
+         os.close(parent)
+@@ -440,13 +476,16 @@
+                 con.execute('INSERT OR IGNORE INTO roots VALUES (?,?,?)', (root_id, str(root), time.time()))
+             for rel, estimated_size in candidates:
+                 try:
+-                    current = os.stat(root / rel, follow_symlinks=False)
++                    current = io_call('source_stat', os.stat, root / rel, follow_symlinks=False)
+                     if current.st_size != estimated_size:
+                         raise ValueError('source_size_changed_after_preflight')
+                     stats[process_one(root, out, con, rel, known, guard, check_output)] += 1
+                 except (OSError, ValueError) as error:
+                     stats['rejected'] += 1
+-                    code = str(error) if isinstance(error, ValueError) and re.fullmatch(r'[a-z_]{1,64}', str(error)) else 'source_io_error'
++                    if isinstance(error, OSError):
++                        code = io_code(error)
++                    else:
++                        code = str(error) if str(error) in VALIDATION_CODES else 'source_validation_failed'
+                     stats['errors'][code] = stats['errors'].get(code, 0) + 1
+             guard(root)
+             check_output(0)

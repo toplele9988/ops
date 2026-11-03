@@ -1,0 +1,11 @@
+--- a/console/v3.py
++++ b/console/v3.py
+@@ -51,6 +51,8 @@
+     routes += v3_roles_api.build(app_module)
+     routes += v3_whatsapp_login_api.build(app_module)
+     routes += v3_directory_api.build(app_module)
++    from . import v3_classify_api
++    routes += v3_classify_api.build(app_module)
+     routes += v3_audit_api.build(app_module)
+     routes += v3_extract_api.build(app_module)
+     routes += v3_fulfil_api.build(app_module)

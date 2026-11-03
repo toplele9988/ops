@@ -1,0 +1,11 @@
+--- a/scripts/rehearsal_server.py
++++ b/scripts/rehearsal_server.py
+@@ -58,6 +58,8 @@
+     routes += v3_classify_api.build(gate, path=tmp + '/classify.sqlite3', archive_path=archive)
+     from console import v3_overview_api
+     routes += v3_overview_api.build(gate, paths={'inbound': tmp + '/overview-inbound.sqlite3'})
++    from console import v3_ops_queue_api
++    routes += v3_ops_queue_api.build(gate, paths={'archive': archive, 'inbound': tmp + '/queue-inbound.sqlite3'})
+     for name in ('v3_quotes_api', 'v3_roles_api', 'v3_whatsapp_login_api', 'v3_directory_api', 'v3_audit_api', 'v3_extract_api', 'v3_fulfil_api', 'v3_icbu_api', 'v3_listing_api', 'v3_lang_api', 'v3_pipeline_api'):
+         # Modules added by later batches join the rehearsal automatically.
+         try:

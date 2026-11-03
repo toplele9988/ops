@@ -1,0 +1,35 @@
+.inbox-ops .inbox-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.inbox-field { display: grid; gap: 6px; margin: 10px 0; min-width: 0; }
+.inbox-field input, .inbox-field select, .inbox-field textarea { max-width: 100%; width: 100%; min-width: 0; box-sizing: border-box; }
+.inbox-ops .composer { flex: none; padding: 10px 16px; border-top: 1px solid var(--sep); max-height: 38vh; overflow-y: auto; }
+.inbox-ops .composer-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.inbox-ops .inbox-feedback { padding: 10px 16px; color: var(--green); background: var(--surface); flex: none; }
+.inbox-purpose { margin: 0; padding: 6px 16px; font-size: 13px; }
+.inbox-queue { padding: 12px; border: 1px solid var(--sep); border-radius: 10px; background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+.inbox-next { margin: 0 16px 10px 68px; }
+.inbox-deal { display: flex; white-space: normal; margin: 6px 0; }
+.inbox-ops .profile-body section { display: grid; gap: 8px; }
+.inbox-ops .profile-body p { margin: 0; }
+.inbox-ops .pane-head { flex-wrap: wrap; }
+.inbox-ops .segmented { flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .inbox-ops .side[data-expanded="true"] { max-height: 57vh; }
+  .inbox-ops .thread-body { padding: 10px 12px; }
+  .inbox-ops .composer { padding: 8px 12px; }
+  .inbox-ops .pane-head { min-height: 48px; padding: 8px 12px; }
+  .inbox-ops .inbox-purpose { display: none; }
+  .inbox-ops .inbox-actions .btn { min-height: 44px; }
+}
+.inbox-file-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
+.inbox-field input, .inbox-field select, .inbox-field textarea { padding: 9px 10px; border: 1px solid var(--sep); border-radius: 8px; background: var(--surface); color: var(--label); font: inherit; }
+.inbox-ops .seg { flex-wrap: wrap; max-width: 100%; }
+@media (max-width: 900px) {
+  .inbox-ops[data-open="true"]:has(.side[data-expanded="true"]) { grid-template-areas: "side"; grid-template-rows: minmax(0, 1fr); }
+  .inbox-ops:has(.side[data-expanded="true"]) .thread { display: none; }
+  .inbox-ops .side[data-expanded="true"] { max-height: none; height: 100%; }
+}
+.inbox-side-purpose { display: none; }
+@media (max-width: 900px) {
+  .inbox-ops .inbox-purpose { display: block; }
+  .inbox-ops .inbox-side-purpose { display: block; }
+}

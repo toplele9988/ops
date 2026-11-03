@@ -1,0 +1,36 @@
+.pipeline-page { min-width: 0; }
+.pipeline-page p { margin: 6px 0; }
+.pipeline-muted { color: var(--label-2); }
+.pipeline-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin: 16px 0; }
+.pipeline-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.pipeline-card { padding: 18px; min-width: 0; overflow-wrap: anywhere; border: 1px solid var(--sep); }
+.pipeline-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.pipeline-interrupted { border-color: var(--red); }
+.pipeline-interrupted .pipeline-reason { color: var(--red); }
+.pipeline-slow { border-color: var(--orange); }
+.pipeline-counts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
+.pipeline-counts dt { color: var(--label-2); font-size: 12px; }
+.pipeline-counts dd { margin: 4px 0 0; font-size: 16px; font-weight: 600; }
+.pipeline-last { grid-column: 1 / -1; }
+.pipeline-mix, .pipeline-next { padding: 10px 12px; background: var(--fill); border-radius: var(--r-ctl); margin: 12px 0; }
+.pipeline-chart { margin: 16px 0; color: var(--label-2); }
+.pipeline-chart svg { display: block; color: var(--green); margin-top: 8px; }
+.pipeline-interrupted .pipeline-chart svg { color: var(--red); }
+.pipeline-slow .pipeline-chart svg { color: var(--orange); }
+.pipeline-axis { display: flex; justify-content: space-between; gap: 8px; }
+.pipeline-page summary { cursor: pointer; margin-top: 8px; }
+.pipeline-hour-table { max-height: 220px; overflow: auto; margin-top: 8px; }
+.pipeline-hour-table table { width: 100%; text-align: left; border-collapse: collapse; }
+.pipeline-hour-table td, .pipeline-hour-table th { padding: 4px; border-bottom: 1px solid var(--sep); }
+.pipeline-coverage { margin-top: 24px; }
+.pipeline-scorecard, .pipeline-jobs { margin: 24px 0; }
+.pipeline-score-channel { padding: 18px; margin-bottom: 16px; min-width: 0; overflow-wrap: anywhere; }
+.pipeline-score-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+.pipeline-score-metric { min-width: 0; padding: 12px; border: 1px solid var(--sep); border-radius: var(--r-ctl); }
+.pipeline-page .pipeline-coverage-row { display: grid; grid-template-columns: 110px 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 760px) {
+  .pipeline-grid { grid-template-columns: minmax(0, 1fr); }
+  .pipeline-score-metrics { grid-template-columns: minmax(0, 1fr); }
+  .pipeline-card { padding: 14px; }
+  .pipeline-page .pipeline-coverage-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+}

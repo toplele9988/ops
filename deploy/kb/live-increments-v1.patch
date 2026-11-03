@@ -1,0 +1,269 @@
+--- a/video_knowledge/kb_extract.py
++++ b/video_knowledge/kb_extract.py
+@@ -120,7 +120,10 @@
+     selected = set(chatrooms)
+     grouped = {room: [] for room in selected}
+     for row in kb_authorized(db, ctx):
+-        if row['chatroom_id'] in selected and _eligible(row):
++        if (row['chatroom_id'] in selected and _eligible(row)
++                and ('_kb_live_ids' not in ctx or row['evidence_id'] in ctx['_kb_live_ids'])):
++            if '_kb_live_rows' in ctx and dict(row) != ctx['_kb_live_rows'][row['evidence_id']]:
++                raise ValueError('live_evidence_changed')
+             grouped[row['chatroom_id']].append(row)
+     result = []
+     for room in sorted(grouped):
+@@ -133,7 +136,8 @@
+         def flush():
+             nonlocal chat, chars, previous_at
+             if chat:
+-                unit_id = f'KC:{chat[0]["evidence_id"]}:{len(chat)}'
++                unit_id = (f'KL:{chat[0]["evidence_id"]}' if '_kb_live_ids' in ctx
++                           else f'KC:{chat[0]["evidence_id"]}:{len(chat)}')
+                 result.append(_make_unit(unit_id, room, chat))
+             chat = []
+             chars = 0
+@@ -156,9 +160,13 @@
+                          'body': compact, 'at': at})
+             chars += len(compact)
+             previous_at = at
++            # Live increments have stable per-evidence units, including timestamp ties.
++            if '_kb_live_ids' in ctx:
++                flush()
+         flush()
+     for unit in result:
+         role = 'learning' if unit['chatroom_id'] in ctx.get('_learning', {}) else 'supplier'
++        unit['live_increment'] = '_kb_live_ids' in ctx
+         unit['business_role'] = role
+         unit['unit_sha256'] = hashlib.sha256(
+             (role + '\0' + unit['unit_sha256']).encode()).hexdigest()
+@@ -229,9 +237,13 @@
+     _, segments = kb_tables(unit)
+     row = db.execute(f'SELECT unit_sha256,status,created_at FROM {segments} '
+                      'WHERE unit_id=?', (unit['unit_id'],)).fetchone()
++    if row and unit.get('live_increment') and row[0] != unit['unit_sha256']:
++        raise ValueError('live_evidence_changed')
+     if not row or row[0] != unit['unit_sha256']:
+         return False
+     if row[1] in ('failed', 'no_second_reader'):
++        if unit.get('live_increment'):
++            return True
+         # Old unknown/provider failures need an explicit, source-bound repair
+         # admission. A daily timer is not permission to resend their prompts.
+         return not kb_model_runtime.recovery_allowed(db, unit, row)
+@@ -306,7 +318,7 @@
+         prompt = prompt_for(unit)
+         if quarantined is not None and kb_model_runtime.sha(prompt) in quarantined:
+             result['quarantined'] = result.get('quarantined', 0) + 1
+-            result['more'] = True
++            # Frozen unknowns are terminal exclusions, never pending retries.
+             continue
+         kb_tables(unit, db=db)
+         reader_a = ''
+--- a/video_knowledge/kb_live.py
++++ b/video_knowledge/kb_live.py
+@@ -28,6 +28,9 @@
+ WINDOW_SECONDS = 60.0
+ COOLDOWN_SECONDS = 3600.0
+ BUDGET_CODE = 'qwen_matrix_budget_exhausted'
++RECOVERY_BOUNDARY = kb_model_runtime.RECOVERY_BOUNDARY
++RECOVERY_BOUNDARY_SHA256 = None
++RECOVERY_DB = Path(os.environ.get('OPS_KB_RECOVERY_DB', '/var/lib/imgw/ops-app/kb-live-recovery.sqlite3'))
+ 
+ 
+ @dataclass(frozen=True)
+@@ -137,6 +140,70 @@
+         ) STRICT''')
+ 
+ 
++def read_recovery_boundary(matrix):
++    raw = kb_model_runtime.restricted(RECOVERY_BOUNDARY, owner=0)
++    pinned = kb_model_runtime.sha(raw)
++    value = json.loads(raw)
++    if (pinned != RECOVERY_BOUNDARY_SHA256
++            or set(value) != {'schema', 'after', 'isolation_sha256'}
++            or value['schema'] != 'wechat-kb-live-recovery-v1'
++            or type(value['after']) is not int or value['after'] <= 0
++            or value['after'] > time.time()
++            or value['isolation_sha256'] != matrix.manifest_sha256):
++        raise kb_model_runtime.ModelError('kb_model_policy_invalid')
++    matrix.recovery_boundary_sha256 = pinned
++    return value['after']
++
++
++def _increment_context(db, ctx, after, now, settle_seconds, matrix):
++    # Source fingerprints and the reviewed epoch live in a separate private DB.
++    # No bodies or raw identities are copied into this ledger.
++    if type(after) is not int or after <= 0:
++        raise ValueError('recovery_boundary_invalid')
++    epoch = kb_model_runtime.sha(kb_model_runtime.canon({
++        'after': after, 'isolation_sha256': matrix.manifest_sha256}))
++    selected = set()
++    snapshots = {}
++    with closing(private_store.open_private_db(RECOVERY_DB)) as recovery:
++        recovery.execute('PRAGMA synchronous=FULL')
++        recovery.execute('BEGIN IMMEDIATE')
++        try:
++            recovery.execute('CREATE TABLE IF NOT EXISTS recovery_epoch (key TEXT PRIMARY KEY, digest TEXT NOT NULL)')
++            recovery.execute('CREATE TABLE IF NOT EXISTS recovery_sources (source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)')
++            previous = recovery.execute("SELECT digest FROM recovery_epoch WHERE key='cutover'").fetchone()
++            if previous is not None and previous[0] != epoch:
++                raise ValueError('recovery_boundary_changed')
++            recovery.execute("INSERT OR IGNORE INTO recovery_epoch VALUES('cutover', ?)", (epoch,))
++            for row in kb_authorized(db, ctx):
++                role = 'learning' if row['chatroom_id'] in ctx.get('_learning', {}) else 'supplier'
++                source_key = kb_model_runtime.sha(row['evidence_id'])
++                fingerprint = kb_model_runtime.sha(kb_model_runtime.canon({
++                    key: row[key] for key in ('evidence_id', 'chatroom_id', 'body_text',
++                    'price_kind', 'source_created_at', 'received_at', 'created_at',
++                    'source_kind', 'source_sha256', 'classification_id', 'owner', 'source_scope')
++                }) + '\0' + role)
++                old = recovery.execute('SELECT fingerprint FROM recovery_sources WHERE source_key=?', (source_key,)).fetchone()
++                if old is not None and old[0] != fingerprint:
++                    raise ValueError('live_evidence_changed')
++                # Missing original send time is not proof of natural arrival.
++                if row['source_created_at'] is None or row['created_at'] is None:
++                    continue
++                source_at = _seconds(row['source_created_at'])
++                admitted_at = _seconds(row['created_at'])
++                if source_at <= after or admitted_at <= after or row['price_kind'] == 'customer_inquiry' or row['source_kind'] == 'historical_message':
++                    continue
++                recovery.execute('INSERT OR IGNORE INTO recovery_sources VALUES(?, ?)', (source_key, fingerprint))
++                # Settle per evidence, so a busy room cannot starve older arrivals.
++                if now - max(source_at, admitted_at) >= settle_seconds:
++                    selected.add(row['evidence_id'])
++                    snapshots[row['evidence_id']] = dict(row)
++            recovery.commit()
++        except BaseException:
++            recovery.rollback()
++            raise
++    return {**ctx, '_kb_live_ids': frozenset(selected), '_kb_live_rows': snapshots}
++
++
+ def _latest_by_chatroom(db, ctx, chatrooms):
+     selected = set(chatrooms)
+     latest = {}
+@@ -144,7 +211,8 @@
+         return latest
+     for row in kb_authorized(db, ctx):
+         chatroom = row['chatroom_id']
+-        if chatroom not in selected or row['price_kind'] == 'customer_inquiry':
++        if (chatroom not in selected or row['price_kind'] == 'customer_inquiry'
++                or ('_kb_live_ids' in ctx and row['evidence_id'] not in ctx['_kb_live_ids'])):
+             continue
+         # Match COALESCE exactly: a zero source timestamp is not NULL.
+         at = row['source_created_at']
+@@ -178,7 +246,7 @@
+     return safe
+ 
+ 
+-def tick(db, state, config, policy, now, *, matrix, limiter) -> list[dict]:
++def tick(db, state, config, policy, now, *, matrix, limiter, recovery_after=None) -> list[dict]:
+     """Run one enabled round; return one privacy-safe log per extraction.
+ 
+     A partial or quota-stopped room keeps its processed watermark. Advance
+@@ -197,15 +265,29 @@
+         settle_seconds = _seconds(
+             config.settle_seconds if isinstance(config, LiveConfig) else 120)
+         ctx = kb_context(state, source_config, policy, int(now))
++        if recovery_after is not None:
++            held = matrix.preflight()
++            ctx = _increment_context(db, ctx, recovery_after, now, settle_seconds, matrix)
++        elif getattr(matrix, 'isolation_enabled', False):
++            raise ValueError('recovery_boundary_missing')
+         initialize_live(db)
+         chatrooms = kb_extract.scope_chatrooms(db, ctx, scope)
+         latest = _latest_by_chatroom(db, ctx, chatrooms)
+         # An exact repair admission can reopen local-preflight failures without
+         # deleting/resetting the ordinary live watermark. Unknown failures stay held.
+         repair_rooms = set()
++        increment_rooms = set()
++        failed_rooms = set()
+         for unit in kb_extract.units(db, ctx, chatrooms):
++            if recovery_after is not None:
++                prompt = (kb_extract.LEARNING_PROMPT if unit['business_role'] == 'learning'
++                          else kb_extract.PROMPT) + unit['text']
++                if kb_model_runtime.sha(prompt) not in held and not kb_extract._prior(db, unit, int(now)):
++                    increment_rooms.add(unit['chatroom_id'])
+             _, segment_table = kb_extract.kb_tables(unit)
+             row = db.execute(f'SELECT unit_sha256,status,created_at FROM {segment_table} WHERE unit_id=?', (unit['unit_id'],)).fetchone()
++            if row and row[1] in ('failed', 'no_second_reader'):
++                failed_rooms.add(unit['chatroom_id'])
+             if row and row[1] in ('failed', 'no_second_reader') and kb_model_runtime.recovery_allowed(db, unit, row):
+                 repair_rooms.add(unit['chatroom_id'])
+         pending = []
+@@ -220,7 +302,9 @@
+                     ON CONFLICT(chatroom_id) DO UPDATE SET
+                         seen_at=MAX(kb_live_state.seen_at, excluded.seen_at)''',
+                     (chatroom, at))
+-                if (at > processed_at or chatroom in repair_rooms) and now - at >= settle_seconds:
++                if ((chatroom in increment_rooms if recovery_after is not None
++                     else at > processed_at or chatroom in repair_rooms)
++                        and now - at >= settle_seconds):
+                     pending.append((chatroom, at))
+ 
+         matrix = _BudgetMatrix(matrix, limiter)
+@@ -255,7 +339,7 @@
+             })
+             observed_at.append(at)
+             exhausted = limiter.cooldown_remaining() > 0
+-            if not result['more'] and not exhausted:
++            if not result['more'] and not exhausted and not result.get('failed') and not result.get('no_second_reader') and chatroom not in failed_rooms:
+                 completed.append((chatroom, at))
+             if exhausted:
+                 break
+@@ -305,6 +389,7 @@
+         matrix = kb_model_runtime.create_matrix(policy, allow_isolation=True)
+         if matrix is None:
+             return []
++        recovery_after = read_recovery_boundary(matrix)
+         matrix.quarantine_preflight = matrix.quarantine_preflight_live
+         state_uri = Path(cpq_batch.STATE).absolute().as_uri() + '?mode=ro'
+         with closing(sqlite3.connect(state_uri, uri=True)) as state:
+@@ -313,7 +398,7 @@
+                     cpq_batch.SOURCE_CATALOG)) as db:
+                 db.row_factory = sqlite3.Row
+                 return tick(db, state, config, policy, time.time(),
+-                            matrix=matrix, limiter=limiter)
++                            matrix=matrix, limiter=limiter, recovery_after=recovery_after)
+ 
+ 
+ def _write(value):
+--- a/video_knowledge/kb_model_runtime.py
++++ b/video_knowledge/kb_model_runtime.py
+@@ -19,6 +19,7 @@
+ POLICY = Path('/etc/imgw/kb-model-runtime.json')
+ ROOT = Path('/var/lib/imgw/wechat/kb-model-runtime')
+ ISOLATION_MANIFEST = Path('/etc/imgw/kb-two-unknown-manifest.json')
++RECOVERY_BOUNDARY = Path('/etc/imgw/kb-live-recovery-v1.json')
+ SAFE_CODES = frozenset({
+     'qwen_matrix_ledger_invalid', 'qwen_matrix_ledger_not_private',
+     'qwen_matrix_policy_invalid', 'qwen_matrix_call_failed',
+@@ -133,6 +134,9 @@
+         self.root = Path(policy['root'])
+ 
+     def boundary(self):
++        pinned = getattr(self, 'recovery_boundary_sha256', None)
++        if pinned is not None:
++            need(sha(restricted(RECOVERY_BOUNDARY, owner=0)) == pinned, 'kb_model_dependency_changed')
+         if self.isolation_enabled and self.manifest_sha256 is not None:
+             need(sha(restricted(ISOLATION_MANIFEST, owner=0)) == self.manifest_sha256, 'kb_model_dependency_changed')
+         for path, digest in self.policy.get('dependency_pins', {}).items():
+--- a/live_loader.py
++++ b/live_loader.py
+@@ -16,6 +16,8 @@
+ def load():
+     manifest=json.loads(checked(MANIFEST))
+     if manifest.get('schema')!='kb-live-dual-v1' or set(manifest.get('modules',{}))!=set(MODULES):raise RuntimeError('manifest_invalid')
++    boundary=checked(Path('/etc/imgw/kb-live-recovery-v1.json'))
++    if hashlib.sha256(boundary).hexdigest()!=manifest.get('recovery_boundary_sha256'):raise RuntimeError('recovery_boundary_changed')
+     import video_knowledge as pkg
+     for name in MODULES:
+         path=BASE/'video_knowledge'/(name+'.py')
+@@ -25,6 +27,7 @@
+         module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;setattr(pkg,name,module)
+         spec.loader.exec_module(module)
+     if pkg.kb_live.kb_model_runtime is not pkg.kb_model_runtime or pkg.kb_extract.kb_model_runtime is not pkg.kb_model_runtime or pkg.kb_live.kb_profile is not pkg.kb_profile:raise RuntimeError('mixed_module_graph')
++    pkg.kb_live.RECOVERY_BOUNDARY_SHA256=manifest['recovery_boundary_sha256']
+     return pkg.kb_live
+ 
+ if __name__=='__main__':

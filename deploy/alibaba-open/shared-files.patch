@@ -1,0 +1,39 @@
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -3,6 +3,7 @@
+ import { AppShell } from "./layout/AppShell";
+ import { NAV } from "./nav";
+ import { Channels } from "./pages/Channels";
++import { AlibabaOpen } from "./pages/AlibabaOpen";
+ import { Pipeline } from "./pages/Pipeline";
+ import { DealPage } from "./pages/DealPage";
+ import { Deals } from "./pages/Deals";
+@@ -55,6 +56,7 @@
+               <Route path="inbox" element={<Inbox />} />
+               <Route path="customers" element={<Customers />} />
+               <Route path="system/channels" element={<Channels />} />
++              <Route path="system/alibaba-open" element={<AlibabaOpen />} />
+               <Route path="system/pipeline" element={<Pipeline />} />
+               <Route path="system/language" element={<LanguageSettings />} />
+               <Route path="packing" element={<Packing />} />
+--- a/web/src/nav.ts
++++ b/web/src/nav.ts
+@@ -58,6 +58,7 @@
+ 
+   { key: "system-home", label: "系统总览", path: "/system", kind: "live", area: "back", group: "系统", icon: MonitorCog },
+   { key: "channels", label: "渠道接入", path: "/system/channels", kind: "live", area: "back", group: "系统", icon: Radio },
++  { key: "alibaba-open", label: "阿里订单接入", path: "/system/alibaba-open", kind: "live", area: "back", group: "系统", icon: Receipt },
+   { key: "pipeline", label: "数据管道健康", path: "/system/pipeline", kind: "live", area: "back", group: "系统", icon: Database },
+   { key: "language", label: "语言设置", path: "/system/language", kind: "live", area: "back", group: "系统", icon: Languages },
+   { key: "knowledge", label: "知识中枢", path: "/system/knowledge", kind: "live", area: "back", group: "系统", icon: BookOpenText },
+--- a/scripts/rehearsal_server.py
++++ b/scripts/rehearsal_server.py
+@@ -52,6 +52,8 @@
+               + v3_deals_api.build(gate, archive))
+     from console import v3_deal_workflow_api
+     routes += v3_deal_workflow_api.build(gate, archive, runner=None)
++    from console import v3_alibaba_open_api
++    routes += v3_alibaba_open_api.build(gate, archive, credentials_path=tmp + '/alibaba-open-unconfigured.json')
+     for name in ('v3_quotes_api', 'v3_roles_api', 'v3_whatsapp_login_api', 'v3_directory_api', 'v3_audit_api', 'v3_extract_api', 'v3_fulfil_api', 'v3_icbu_api', 'v3_listing_api', 'v3_lang_api', 'v3_pipeline_api'):
+         # Modules added by later batches join the rehearsal automatically.
+         try:

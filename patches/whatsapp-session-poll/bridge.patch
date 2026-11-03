@@ -1,0 +1,53 @@
+--- a/src/whatsapp/bridge.py
++++ b/src/whatsapp/bridge.py
+@@ -60,6 +60,42 @@
+         payload=r.read(MAX_BODY+1);need(len(payload)<=MAX_BODY,'upstream_response_large')
+         return (payload,r.headers.get('Content-Type','application/octet-stream')) if raw else json.loads(payload)
+ 
++POLL_STATES=frozenset(('WORKING','FAILED','STARTING','STOPPED','SCAN_QR_CODE','PASSKEY_REQUIRED','PASSKEY_CONFIRMATION_REQUIRED'))
++
++def poll_session(c,api=waha,clock=time.time):
++    need(isinstance(c.get('session'),str) and re.fullmatch(r'[A-Za-z0-9_-]{1,100}',c['session']),'session_invalid')
++    response=api(c,'/api/sessions/'+c['session'],method='GET',timeout=10)
++    need(isinstance(response,dict) and response.get('status') in POLL_STATES,'poll_status_invalid')
++    state=response['status'];stamp=clock()
++    with db_open(c) as d:
++        d.execute('BEGIN IMMEDIATE')
++        rows=d.execute("SELECT raw_json,received FROM events WHERE event_type='session.status' AND session=? ORDER BY received DESC,rowid DESC",(c['session'],))
++        latest=None;last_poll=None;seen_latest=False
++        for row in rows:
++            try:
++                event=json.loads(row['raw_json']);payload=event.get('payload',{})
++                if not isinstance(payload,dict):continue
++                if not seen_latest:latest=payload.get('status');seen_latest=True
++                if payload.get('source')=='poll':last_poll=row['received'];break
++            except (ValueError,TypeError,AttributeError):continue
++        if latest==state and last_poll is not None and 0<=stamp-last_poll<1800:return False
++        event={'event':'session.status','session':c['session'],'payload':{'status':state,'source':'poll'}}
++        raw=canon(event);bodysha=sha(raw);eventkey=sha(canon(['poll',c['session'],stamp,os.urandom(16).hex()]))
++        d.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?)',(eventkey,'','session.status',c['session'],bodysha,raw,stamp))
++    return True
++
++def poll_loop():
++    while True:
++        interval=300
++        try:
++            c=cfg();value=c.get('session_poll_interval_seconds',300)
++            need(type(value) is int and 1<=value<=1800,'poll_interval_invalid');interval=value
++            poll_session(c)
++        except Exception:
++            # Do not log provider errors, which can contain sensitive data.
++            print(canon({'event':'session_poll_failed'}),flush=True)
++        time.sleep(interval)
++
+ def bind(c,api=waha):
+     session=api(c,'/api/sessions/'+c['session'])
+     me=(session.get('me') or {}).get('id')
+@@ -239,6 +275,7 @@
+     for host,port,role in [('127.0.0.1',8788,'api'),(c['webhook_bind'],8788,'webhook'),('127.0.0.1',8789,'qr')]:
+         s=ThreadingHTTPServer((host,port),Handler);s.role=role;s.daemon_threads=True;servers.append(s)
+         threading.Thread(target=s.serve_forever,daemon=True).start()
++    threading.Thread(target=poll_loop,daemon=True).start()
+     print(canon({'event':'started','listeners':3,'customer_sends':0}),flush=True)
+     while True:time.sleep(60)
+ if __name__=='__main__':main()

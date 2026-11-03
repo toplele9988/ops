@@ -1,0 +1,24 @@
+{
+  "source_root": "/opt/imgw",
+  "git_commit": null,
+  "note": "生产挂载没有可核对的 Git 提交，以文件 SHA-256 为基线；只在 /tmp 应用补丁。",
+  "source_sha256": {
+    "wechat/api_groupbot.py": "a52b7e93ed6ac577c25f78ee42c494915854b6ab052468e2e65148cd643e8367",
+    "console-waha-history-raw-v1/history_index_worker.py": "047086c04c24d5877920cb3f959434dbd41ccbcfd3a0227890a7e09542ebd40f",
+    "waha-names-refresh-v1/capture_names_worker.py": "dd3b74e05e017d376eb7ab55f213d719cc7328b7f5c48618088ee51492facb67",
+    "waha-names-refresh-v1/wa_names.py": "800081a5817cbbca554bfc00d24e010ec8d20c07e46703ae0882e1816c02b2e7",
+    "console-waha-history-raw-v1/history_index.py": "5bf374fba458876097368a35b2d2be9658148acf2c889d43b9f3dd63c0626610",
+    "wechat-kb-dual-live-v1/video_knowledge/quota_isolation.py": "27fc420444a491a57586e0d2cc0c744af5c4374746987253dac13d49d484f1b3",
+    "video-broker/20261012/knowledge_digest/daily_worker_candidate.py": "c2144b295b01b7d296fe773d5337f5759d4161c54bf9252fd7faf28cff07d538",
+    "waha-names-refresh-v1/private_history.py": "e8f978759f517b5cdba381025e72435ac91698b09c5ccdb7a42c628d0fbc1907"
+  },
+  "patch_sha256": {
+    "wechat-silent-admission.patch": "ea312f77a9e108b2c0e67ad83c71880518b5a1c66537b1ed63604b8cf6c0eb61",
+    "job-errors.patch": "c24a9dc8348bf06dd0b08efe4132842f90b2cee8380174aaf4a15ef3fc00457f"
+  },
+  "candidate_sha256": {
+    "wechat/api_groupbot.py": "cb1ae1ccb49efee581af07a67af372f1ceee522f0e591bf492b71e2c76f12a2b",
+    "console-waha-history-raw-v1/history_index_worker.py": "eb0b29f5b7c9e7233b42e4f688ee6fc0c721d22c6093438362ded090378bba57",
+    "waha-names-refresh-v1/capture_names_worker.py": "36991e8025361afa64397a2c5dddb91c6756f0126dcf7bcaf1b2cdd5731250a7"
+  }
+}

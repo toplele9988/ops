@@ -1,0 +1,472 @@
+--- a/console/wamedia/store.py
++++ b/console/wamedia/store.py
+@@ -21,12 +21,39 @@
+                   'text/plain'))
+ HEX = re.compile(r'[0-9a-f]{64}\Z')
+ KINDS = frozenset(('image', 'video', 'voice', 'file'))
++ERRORS = {
++    'archive_metadata': '归档信息不完整，请联系管理员检查 bridge 媒体记录',
++    'archive_missing': '归档文件缺失，请联系管理员检查 bridge 媒体目录',
++    'archive_path': '归档文件路径不安全或无法读取，请联系管理员检查文件权限',
++    'archive_size': '归档文件长度与记录不符，请联系管理员核对原文件',
++    'archive_hash': '归档文件哈希与记录不符，请联系管理员核对原文件',
++    'archive_source': '归档记录暂时无法读取，请联系管理员检查 bridge 数据库',
++    'media_type': '附件类型不支持或与消息不符，请联系管理员核对归档记录',
++    'media_size': '附件为空或超过大小上限，请联系管理员核对原文件',
++    'mount_unavailable': '附件已保存在本机缓冲，存储挂载不可用，请检查后重试',
++    'source_unavailable': '渠道暂时无法提供附件，请稍后刷新；持续不可取时请联系管理员',
++}
++
++
++class MediaError(ValueError):
++    def __init__(self, code):
++        self.code = code if code in ERRORS else 'source_unavailable'
++        super().__init__(ERRORS[self.code])
+ 
+ 
+ def identity(session, message_id):
+     if not all(isinstance(v, str) and 0 < len(v) <= 500 and '\x00' not in v for v in (session, message_id)):
+         raise ValueError('消息标识不可用')
+     return hashlib.sha256((str(len(session)) + ':' + session + message_id).encode('utf8')).hexdigest()
++
++
++def _nearest_mount(root):
++    for parent in (root, *root.parents):
++        if parent == Path('/'):
++            break
++        if os.path.ismount(parent):
++            return parent
++    return None
+ 
+ 
+ class MediaStore:
+@@ -35,9 +62,11 @@
+         self.buffer_root = Path(buffer_root).absolute()
+         configured_mount = mount if mount is not None else os.environ.get('IMGW_WA_MEDIA_MOUNT')
+         parts = self.root.parts
+-        # Paths under /mnt must never silently become local storage.
+-        if configured_mount is None and len(parts) >= 3 and parts[1] == 'mnt':
+-            configured_mount = Path('/mnt') / parts[2]
++        if configured_mount is None or configured_mount == '':
++            configured_mount = None
++            # Pin the chosen mount for this process; an absent NAS must never become local storage.
++            if len(parts) >= 3 and parts[1] == 'mnt':
++                configured_mount = _nearest_mount(self.root) or Path('/mnt') / parts[2]
+         self.mount = Path(configured_mount).absolute() if configured_mount else None
+         if self.mount and (not self.root.is_relative_to(self.mount) or self.buffer_root.is_relative_to(self.mount)
+                            or self.buffer_root.is_relative_to('/mnt') or self.buffer_root.resolve() != self.buffer_root):
+@@ -122,6 +151,7 @@
+         db = sqlite3.connect(self.db, timeout=10)
+         db.execute('PRAGMA busy_timeout=10000')
+         db.execute('CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, session TEXT NOT NULL, message_id TEXT NOT NULL, chat_id TEXT NOT NULL, kind TEXT NOT NULL, filename TEXT NOT NULL, state TEXT NOT NULL, mime TEXT, size INTEGER, sha256 TEXT, updated REAL NOT NULL)')
++        db.execute('CREATE TABLE IF NOT EXISTS media_errors (id TEXT PRIMARY KEY, error_code TEXT NOT NULL)')
+         return db
+ 
+     def register(self, session, message_id, kind, filename='', chat_id=''):
+@@ -134,7 +164,7 @@
+             raise ValueError('文件名不可用')
+         filename = ''.join(ch for ch in filename if ch.isprintable() and ch not in '/\\')[:200]
+         with closing(self._connect()) as db, db:
+-            db.execute('INSERT OR IGNORE INTO media VALUES (?,?,?,?,?,?,?,?,?,?,?)',
++            db.execute('INSERT OR IGNORE INTO media(id,session,message_id,chat_id,kind,filename,state,mime,size,sha256,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                        (key, session, message_id, chat_id, kind, filename, 'pending', None, None, None, time.time()))
+         return key
+ 
+@@ -147,12 +177,17 @@
+                 return None
+             with closing(sqlite3.connect(self.db.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+                 db.row_factory = sqlite3.Row
+-                row = db.execute('SELECT id,chat_id,kind,filename,state,mime,size,sha256 FROM media WHERE id=?', (key,)).fetchone()
++                errors = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='media_errors'").fetchone()
++                column = "COALESCE(e.error_code,'') AS error_code" if errors else "'' AS error_code"
++                join = ' LEFT JOIN media_errors e ON e.id=m.id ' if errors else ' '
++                row = db.execute('SELECT m.id,chat_id,kind,filename,state,mime,size,sha256,' + column +
++                                 ' FROM media m' + join + 'WHERE m.id=?', (key,)).fetchone()
+                 if not row:
+                     return None
+                 result = dict(row)
++                result['error'] = ERRORS.get(result['error_code'], '')
+                 result['buffered'] = False
+-                if self.mount and result['state'] == 'failed' and isinstance(result['sha256'], str) and HEX.fullmatch(result['sha256']):
++                if self.mount and result['state'] != 'ready' and isinstance(result['sha256'], str) and HEX.fullmatch(result['sha256']):
+                     try:
+                         info = (self.buffer_root / (result['sha256'] + '.blob')).lstat()
+                         result['buffered'] = stat.S_ISREG(info.st_mode) and info.st_size == result['size']
+@@ -162,21 +197,27 @@
+         except (sqlite3.Error, OSError):
+             return None
+ 
+-    def fail(self, key):
++    def fail(self, key, code='source_unavailable', *, retryable=False, replace=False):
++        code = code if code in ERRORS else 'source_unavailable'
+         with closing(self._connect()) as db, db:
+-            db.execute("UPDATE media SET state='failed',updated=? WHERE id=? AND state!='ready'", (time.time(), key))
+-
+-    def save(self, key, mime, body):
++            db.execute('BEGIN IMMEDIATE')
++            changed = db.execute("UPDATE media SET state=?,updated=? WHERE id=? AND (state!='ready' OR ?)",
++                                 ('pending' if retryable else 'failed', time.time(), key, replace))
++            if changed.rowcount:
++                db.execute('INSERT INTO media_errors VALUES(?,?) ON CONFLICT(id) DO UPDATE SET error_code=excluded.error_code',
++                           (key, code))
++
++    def save(self, key, mime, body, *, replace=False):
+         row = self.get(key)
+         if not row:
+             raise ValueError('消息不存在')
+         prefix = {'image': 'image/', 'video': 'video/', 'voice': 'audio/'}.get(row['kind'])
+         if mime not in MIME or (prefix and not mime.startswith(prefix)):
+-            self.fail(key)
+-            raise ValueError('附件类型不支持')
++            self.fail(key, 'media_type', replace=replace)
++            raise MediaError('media_type')
+         if not isinstance(body, bytes) or not 0 < len(body) <= MAX_BYTES:
+-            self.fail(key)
+-            raise ValueError('附件为空或超过大小上限')
++            self.fail(key, 'media_size', replace=replace)
++            raise MediaError('media_size')
+         kind = row['kind']
+         if kind == 'file':
+             kind = ('image' if mime.startswith('image/') else 'video' if mime.startswith('video/') else
+@@ -187,28 +228,37 @@
+             self._write_blob(self.buffer_root, digest, body)
+             with closing(self._connect()) as db, db:
+                 db.execute('BEGIN IMMEDIATE')
+-                db.execute("UPDATE media SET state='failed',kind=?,mime=?,size=?,sha256=?,updated=? WHERE id=? AND state!='ready'",
+-                           (kind, mime, len(body), digest, time.time(), key))
++                changed = db.execute("UPDATE media SET state='failed',kind=?,mime=?,size=?,sha256=?,updated=? WHERE id=? AND (state!='ready' OR ?)",
++                                     (kind, mime, len(body), digest, time.time(), key, replace))
++                if changed.rowcount:
++                    db.execute("INSERT INTO media_errors VALUES(?,'mount_unavailable') ON CONFLICT(id) DO UPDATE SET error_code=excluded.error_code", (key,))
+             try:
+                 self._write_blob(self.root, digest, body, mounted=True)
+             except OSError:
+-                raise ValueError('附件已保存在本机缓冲，存储挂载不可用，请检查后重试') from None
++                raise MediaError('mount_unavailable') from None
+         else:
+             self._write_blob(self.root, digest, body)
+         with closing(self._connect()) as db, db:
+             db.execute('BEGIN IMMEDIATE')
+-            db.execute("UPDATE media SET state='ready',kind=?,mime=?,size=?,sha256=?,updated=? WHERE id=? AND state!='ready'",
+-                       (kind, mime, len(body), digest, time.time(), key))
+-
+-    def retry(self, session, message_id, fetch):
+-        """Explicit caller action only; fetch is a trusted, bounded WAHA transport."""
++            changed = db.execute("UPDATE media SET state='ready',kind=?,mime=?,size=?,sha256=?,updated=? WHERE id=? AND (state!='ready' OR ?)",
++                                 (kind, mime, len(body), digest, time.time(), key, replace))
++            if changed.rowcount:
++                db.execute('DELETE FROM media_errors WHERE id=?', (key,))
++
++    def retry(self, session, message_id, fetch, *, archive=None):
++        """Prefer validated bridge bytes; the bounded WAHA transport is a fallback only."""
+         key = identity(session, message_id)
+         row = self.get(key)
+         if not row:
+             raise ValueError('消息不存在')
+-        if row['state'] == 'ready':
+-            return row
+-        try:
++        try:
++            archived = archive.load(session, message_id) if archive is not None else None
++            if archived is not None:
++                body, mime = archived
++                self.save(key, mime, body, replace=True)
++                return self.get(key)
++            if row['state'] == 'ready':
++                return row
+             buffered = (self.mount and isinstance(row['sha256'], str) and HEX.fullmatch(row['sha256'])
+                         and self._read_blob(self.buffer_root, row))
+             if buffered:
+@@ -216,13 +266,10 @@
+             else:
+                 body, mime = fetch(session, row['chat_id'], message_id)
+                 self.save(key, mime, body)
+-        except Exception:
+-            self.fail(key)
+-            failed = self.get(key)
+-            if (self.mount and failed and isinstance(failed['sha256'], str) and
+-                    HEX.fullmatch(failed['sha256']) and self._read_blob(self.buffer_root, failed)):
+-                raise ValueError('附件已保存在本机缓冲，存储挂载不可用，请检查后重试') from None
+-            raise ValueError('附件获取失败，请检查渠道后重试') from None
++        except Exception as error:
++            code = error.code if isinstance(error, MediaError) else 'source_unavailable'
++            self.fail(key, code, replace=archive is not None)
++            raise MediaError(code) from None
+         return self.get(key)
+ 
+     def read(self, key):
+--- a/console/wamedia/ingest.py
++++ b/console/wamedia/ingest.py
+@@ -1,4 +1,4 @@
+-"""Bounded WAHA downloads and a persistent, receive-only work queue."""
++"""Bridge archive ingestion, bounded WAHA fallback and a receive-only work queue."""
+ import json
+ import os
+ from pathlib import Path
+@@ -10,7 +10,8 @@
+ from urllib.parse import quote, unquote, urlsplit
+ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+ 
+-from .store import MAX_BYTES, MIME, identity
++from .bridge import BridgeArchive, MEDIA_ROOT
++from .store import MAX_BYTES, MIME, MediaError
+ 
+ CHAT = re.compile(r'^[0-9A-Za-z._-]+@(c\.us|g\.us|lid)$')
+ FILE = re.compile(r'[A-Za-z0-9_@.+-]{1,700}\Z')
+@@ -79,8 +80,10 @@
+ 
+ 
+ class IngestWorker:
+-    def __init__(self, store, queue_path, fetch, clock=time.time):
++    def __init__(self, store, queue_path, fetch, clock=time.time, *, bridge_db=None, bridge_media=MEDIA_ROOT):
+         self.store, self.path, self.fetch, self.clock = store, Path(queue_path), fetch, clock
++        self.bridge_media = Path(bridge_media)
++        self.archive = BridgeArchive(bridge_db, self.bridge_media) if bridge_db is not None else None
+ 
+     def _connect(self):
+         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+@@ -96,6 +99,11 @@
+         db.execute('PRAGMA busy_timeout=10000')
+         db.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, session TEXT NOT NULL, message_id TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0)')
+         db.execute('CREATE TABLE IF NOT EXISTS progress (source TEXT PRIMARY KEY, cursor INTEGER NOT NULL)')
++        if 'archive_updated' not in {r[1] for r in db.execute('PRAGMA table_info(jobs)')}:
++            with db:
++                db.execute('BEGIN IMMEDIATE')
++                if 'archive_updated' not in {r[1] for r in db.execute('PRAGMA table_info(jobs)')}:
++                    db.execute('ALTER TABLE jobs ADD COLUMN archive_updated REAL')
+         return db
+ 
+     def enqueue(self, session, message_id, chat_id, media):
+@@ -116,6 +124,7 @@
+         if not isinstance(limit, int) or not 1 <= limit <= 5000:
+             raise ValueError('读取数量无效')
+         source = str(Path(bridge_db).resolve())
++        self.archive = BridgeArchive(source, self.bridge_media)
+         with closing(self._connect()) as db:
+             row = db.execute('SELECT cursor FROM progress WHERE source=?', (source,)).fetchone()
+         cursor = row[0] if row else 0
+@@ -144,56 +153,95 @@
+                                 (MAX_ATTEMPTS, self.clock()))
+             return result.rowcount
+ 
++    def _refresh_archived(self, now):
++        if self.archive is None:
++            return
++        with self.archive.connect() as source:
++            if not self.archive.available(source):
++                return
++            # Both attached sources are read-only; only our separate queue transaction writes.
++            source.execute('ATTACH DATABASE ? AS queue', (self.path.absolute().as_uri() + '?mode=ro',))
++            rows = source.execute("SELECT q.id,MAX(j.updated) FROM queue.jobs q JOIN messages m "
++                                  "ON m.session=q.session AND m.message_id=q.message_id "
++                                  "JOIN media_jobs j ON j.message_key=m.message_key "
++                                  "WHERE m.has_media=1 AND j.status='archived' AND q.lease_until<=? "
++                                  "GROUP BY q.id HAVING q.archive_updated IS NULL OR MAX(j.updated)>q.archive_updated "
++                                  "ORDER BY q.id LIMIT 500", (now,)).fetchall()
++        if not rows:
++            return
++        with closing(self._connect()) as db, db:
++            db.execute('BEGIN IMMEDIATE')
++            for key, updated in rows:
++                db.execute('UPDATE jobs SET attempts=0,next_at=0,done=0,archive_updated=? '
++                           'WHERE id=? AND lease_until<=? AND (archive_updated IS NULL OR archive_updated<?)',
++                           (updated, key, now, updated))
++
+     def run_one(self):
+         now = self.clock()
++        with closing(self._connect()):
++            pass
++        self._refresh_archived(now)
+         with closing(self._connect()) as db, db:
+             db.execute('BEGIN IMMEDIATE')
+-            row = db.execute('SELECT id,session,message_id FROM jobs WHERE done=0 AND attempts<? AND next_at<=? AND lease_until<=? ORDER BY next_at,id LIMIT 1', (MAX_ATTEMPTS, now, now)).fetchone()
++            row = db.execute('SELECT id,session,message_id,attempts FROM jobs WHERE done=0 AND attempts<? AND next_at<=? AND lease_until<=? ORDER BY next_at,id LIMIT 1', (MAX_ATTEMPTS, now, now)).fetchone()
+             if row:
+                 db.execute('UPDATE jobs SET attempts=attempts+1,lease_until=? WHERE id=?', (now + 120, row[0]))
+         if not row:
+             return False
++        code = 'source_unavailable'
+         try:
+-            result = self.store.retry(row[1], row[2], self.fetch)
++            result = self.store.retry(row[1], row[2], self.fetch, archive=self.archive)
+             success = bool(result and result['state'] == 'ready')
+-        except Exception:
++        except Exception as error:
+             success = False
++            if isinstance(error, MediaError):
++                code = error.code
++        if not success:
++            self.store.fail(row[0], code, retryable=row[3] + 1 < MAX_ATTEMPTS, replace=self.archive is not None)
+         with closing(self._connect()) as db, db:
+             db.execute('UPDATE jobs SET done=?,next_at=?,lease_until=0 WHERE id=?', (int(success), self.clock() + 60, row[0]))
+         return True
+ 
+ 
+-def main():
++def main(argv=None):
+     import argparse
+-    from console.channels.whatsapp import WhatsAppAdapter
+     from .store import MediaStore
+ 
+     parser = argparse.ArgumentParser(description='WhatsApp 附件入站采集（只读取，不发送）')
+     parser.add_argument('--bridge-db', required=True, help='bridge 消息数据库路径，只读')
++    parser.add_argument('--bridge-media', default=str(MEDIA_ROOT), help='bridge 已归档媒体目录，只读')
+     parser.add_argument('--queue', default=os.environ.get('IMGW_WA_MEDIA_QUEUE', '/var/lib/imgw/ops-app/whatsapp-media-queue.sqlite3'))
+     parser.add_argument('--config', default='/etc/imgw/whatsapp-bridge.json')
+     parser.add_argument('--retry-failed', action='store_true', help='人工重新排队已耗尽重试次数的入站附件，然后退出')
+-    args = parser.parse_args()
+-    adapter = WhatsAppAdapter(config_path=args.config)
++    parser.add_argument('--once', action='store_true', help='处理当前已到重试时间的队列后退出，不等待下一轮重试')
++    args = parser.parse_args(argv)
+     store = MediaStore()
+     # Read configuration on every download so rotated credentials do not require a restart.
+     def fetch(session, chat_id, message_id):
++        from console.channels.whatsapp import WhatsAppAdapter
++        adapter = WhatsAppAdapter(config_path=args.config)
+         return WahaDownload(adapter._configuration())(session, chat_id, message_id)
+-    worker = IngestWorker(store, args.queue, fetch)
++    worker = IngestWorker(store, args.queue, fetch, bridge_db=args.bridge_db, bridge_media=args.bridge_media)
+     if args.retry_failed:
+         print('已重新排队附件数：' + str(worker.reset_failed()))
+-        return
++        return 0
+     while True:
+         try:
+             scanned = worker.scan(args.bridge_db)
+             worked = worker.run_one()
+             if not worked and scanned < 500:
++                if args.once:
++                    print('本轮附件队列已处理；未到重试时间或已耗尽次数的记录仍保留', flush=True)
++                    return 0
+                 time.sleep(5)
+         except Exception:
+             # Do not expose source data, credentials, paths or remote exception text.
++            if args.once:
++                print('附件采集暂时不可用，请检查 bridge 数据库和目录后重新运行', flush=True)
++                return 1
+             print('附件采集暂时不可用，将稍后重试', flush=True)
+             time.sleep(30)
+ 
+ 
+ if __name__ == '__main__':
+-    main()
++    raise SystemExit(main())
+--- a/console/channels/whatsapp.py
++++ b/console/channels/whatsapp.py
+@@ -150,7 +150,7 @@
+                     token = tokens.make(['wa', key], self.key_path)
+                     kind = entry['kind']
+                     if kind in ('image', 'video'):
+-                        block = dict(type=kind, media=token)
++                        block = dict(type=kind, media=token, size_bytes=entry['size'])
+                     else:
+                         name = entry['filename'] or ('语音附件' if kind == 'voice' else '附件')
+                         if kind == 'voice':
+@@ -158,8 +158,9 @@
+                         block = dict(type='file', name=name, size_bytes=entry['size'], media=token)
+                 else:
+                     title = ('附件已保存在本机缓冲，请联系管理员检查存储挂载后重新排队' if entry.get('buffered') else
+-                             '附件获取失败，请联系管理员检查渠道后重新排队' if entry['state'] == 'failed' else '附件等待获取')
+-                    block = dict(type='card', kind='other', title=title, subtitle='')
++                             '附件暂不可取，请联系管理员检查后重新排队' if entry['state'] == 'failed' else
++                             '附件待重试，稍后刷新查看' if entry.get('error') else '附件等待获取')
++                    block = dict(type='card', kind='other', title=title, subtitle=entry.get('error', ''))
+                 message['blocks'] = [block]
+                 if body and not body.startswith('['):
+                     message['blocks'].insert(0, dict(type='text', text=body))
+--- /dev/null
++++ b/console/wamedia/bridge.py
+@@ -0,0 +1,93 @@
++"""Read bridge's archived bytes without modifying its database or media directory."""
++from contextlib import contextmanager
++import hashlib
++import json
++import os
++from pathlib import Path
++import sqlite3
++import stat
++
++from .store import HEX, MAX_BYTES, MIME, MediaError, identity
++
++MEDIA_ROOT = Path(os.environ.get('IMGW_WA_BRIDGE_MEDIA', '/var/lib/imgw/whatsapp/media'))
++
++
++class BridgeArchive:
++    def __init__(self, db, root=MEDIA_ROOT):
++        self.db, self.root = Path(db).absolute(), Path(root).absolute()
++
++    @contextmanager
++    def connect(self):
++        try:
++            db = sqlite3.connect(self.db.as_uri() + '?mode=ro', uri=True, timeout=10)
++        except sqlite3.Error:
++            raise MediaError('archive_source') from None
++        try:
++            db.execute('PRAGMA query_only=ON')
++            yield db
++        except sqlite3.Error:
++            raise MediaError('archive_source') from None
++        finally:
++            db.close()
++
++    def available(self, db):
++        return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='media_jobs'").fetchone() is not None
++
++    def _directory(self):
++        if '..' in self.root.parts:
++            raise MediaError('archive_path')
++        directory = os.open(self.root.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++        try:
++            for part in self.root.parts[1:]:
++                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
++                os.close(directory)
++                directory = child
++            return directory
++        except BaseException:
++            os.close(directory)
++            raise
++
++    def load(self, session, message_id):
++        identity(session, message_id)
++        with self.connect() as db:
++            if not self.available(db):
++                return None
++            row = db.execute("SELECT j.metadata_json FROM messages m JOIN media_jobs j ON j.message_key=m.message_key "
++                             "WHERE m.session=? AND m.message_id=? AND m.has_media=1 AND j.status='archived' "
++                             "ORDER BY j.updated DESC,m.rowid DESC LIMIT 1", (session, message_id)).fetchone()
++        if row is None:
++            return None
++        raw = row[0]
++        try:
++            metadata = json.loads(raw) if isinstance(raw, str) and len(raw) <= 16384 else None
++        except (ValueError, TypeError):
++            metadata = None
++        if not isinstance(metadata, dict):
++            raise MediaError('archive_metadata')
++        digest, size, mime = metadata.get('sha256'), metadata.get('bytes'), metadata.get('mimetype')
++        if not isinstance(digest, str) or not HEX.fullmatch(digest) or type(size) is not int or not 0 < size <= MAX_BYTES:
++            raise MediaError('archive_metadata')
++        if not isinstance(mime, str) or mime not in MIME:
++            raise MediaError('media_type')
++        try:
++            directory = self._directory()
++            try:
++                fd = os.open(digest, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
++            finally:
++                os.close(directory)
++            with os.fdopen(fd, 'rb') as stream:
++                info = os.fstat(stream.fileno())
++                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
++                    raise MediaError('archive_path')
++                if info.st_size != size:
++                    raise MediaError('archive_size')
++                body = stream.read(size + 1)
++        except FileNotFoundError:
++            raise MediaError('archive_missing') from None
++        except OSError:
++            raise MediaError('archive_path') from None
++        if len(body) != size:
++            raise MediaError('archive_size')
++        if hashlib.sha256(body).hexdigest() != digest:
++            raise MediaError('archive_hash')
++        return body, mime

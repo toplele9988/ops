@@ -1,0 +1,536 @@
+--- a/console/pipeline/config.py
++++ b/console/pipeline/config.py
+@@ -22,7 +22,11 @@
+         'wechat_callbacks': {'slow_seconds': 3600, 'interrupted_seconds': 10800},
+         'whatsapp_events': {'slow_seconds': 86400, 'interrupted_seconds': 259200},
+         'whatsapp_messages': {'slow_seconds': 86400, 'interrupted_seconds': 259200},
++        'whatsapp_session': {'slow_seconds': 60, 'interrupted_seconds': 300},
+     },
++    'whatsapp_session_event_limit': 50000,
++    'whatsapp_session_max_age_seconds': 21600,
++    'wechat_pending_stuck_seconds': 3600,
+     'query_timeout_seconds': 1,
+ }
+ 
+@@ -68,6 +72,12 @@
+             raise ValueError('断流阈值须大于变慢阈值')
+     if not _number(result['query_timeout_seconds'], .01, 3):
+         raise ValueError('查询时间预算无效')
++    limit = result['whatsapp_session_event_limit']
++    if type(limit) is not int or not 20 <= limit <= 200000:
++        raise ValueError('会话状态采样条数无效')
++    for key in ('wechat_pending_stuck_seconds', 'whatsapp_session_max_age_seconds'):
++        if not _number(result[key], 1, 90 * 86400):
++            raise ValueError('状态时限配置无效')
+     return result
+ 
+ 
+--- a/console/pipeline/readers.py
++++ b/console/pipeline/readers.py
+@@ -119,11 +119,107 @@
+     return result
+ 
+ 
++def wechat_messages(db, now):
++    result = table_counts(db, 'messages', 'created_at', now)
++    result['pending_ready'] = False
++    try:
++        require(db, 'messages', ('status', 'updated_at'))
++        count, oldest, stalled, invalid = db.execute('''WITH pending AS (
++            SELECT CASE WHEN typeof(created_at) IN ('integer','real') AND created_at>0
++                AND created_at<=:now THEN created_at END AS created,
++                CASE WHEN typeof(updated_at) IN ('integer','real') AND updated_at>0
++                AND updated_at<=:now THEN updated_at END AS updated
++            FROM messages WHERE status='pending')
++            SELECT COUNT(*),MIN(created),MIN(COALESCE(updated,created)),
++                COALESCE(SUM(COALESCE(updated,created) IS NULL),0) FROM pending''', dict(now=now)).fetchone()
++        result.update(pending_ready=True, pending_count=count, pending_oldest_at=oldest,
++                      pending_oldest_age_seconds=now - oldest if oldest is not None else None,
++                      pending_stalled_age_seconds=now - stalled if stalled is not None else None,
++                      pending_invalid_timestamps=invalid)
++    except MissingSchema:
++        pass
++    return result
++
++
++def whatsapp_session(db, now, limit=50000):
++    require(db, 'events', ('event_type', 'received', 'raw_json'))
++    # Only status and the presence of me leave SQL; never return the JSON or identity.
++    rows = db.execute('''SELECT received,
++        CASE WHEN json_valid(raw_json) THEN CASE json_extract(raw_json,'$.payload.status')
++            WHEN 'WORKING' THEN 'WORKING' WHEN 'FAILED' THEN 'FAILED'
++            WHEN 'STARTING' THEN 'STARTING' WHEN 'STOPPED' THEN 'STOPPED'
++            WHEN 'SCAN_QR_CODE' THEN 'SCAN_QR_CODE' WHEN 'PASSKEY_REQUIRED' THEN 'PASSKEY_REQUIRED'
++            WHEN 'PASSKEY_CONFIRMATION_REQUIRED' THEN 'PASSKEY_CONFIRMATION_REQUIRED' END END,
++        CASE WHEN json_valid(raw_json) THEN CASE
++            WHEN json_type(raw_json,'$.me')='object' THEN EXISTS(SELECT 1 FROM json_each(raw_json,'$.me'))
++            WHEN json_type(raw_json,'$.me') IN ('null') OR json_type(raw_json,'$.me') IS NULL THEN 0
++            END END
++        FROM (SELECT received,raw_json FROM events WHERE event_type='session.status'
++            AND typeof(received) IN ('integer','real') AND received>0 AND received<=?
++            ORDER BY received DESC,rowid DESC LIMIT ?)''', (now, limit + 1)).fetchall()
++    truncated = len(rows) > limit
++    rows = rows[:limit]
++    result = dict(total=len(rows), last_seen_at=rows[0][0] if rows else None,
++                  count_1h=None, count_24h=None, hourly=None, invalid_timestamps=0,
++                  session_status=rows[0][1] if rows else None,
++                  has_me=bool(rows[0][2]) if rows and rows[0][2] is not None else None,
++                  last_working_at=next((at for at, state, _ in rows if state == 'WORKING'), None),
++                  non_working_since=None, sample_limit=limit, sampled_events=len(rows),
++                  sample_truncated=truncated, restart_storm=None)
++
++    def complete(seconds):
++        return not truncated or rows[-1][0] < now - seconds
++
++    for name, seconds in (('1h', 3600), ('24h', 86400)):
++        count = sum(state == 'FAILED' and at >= now - seconds for at, state, _ in rows)
++        valid = not any(state is None and at >= now - seconds for at, state, _ in rows)
++        result['failed_count_' + name] = count if rows and complete(seconds) and valid else None
++        result['failed_count_' + name + '_lower_bound'] = count
++    if rows and complete(600) and not any(state is None and at >= now - 600 for at, state, _ in rows):
++        result['restart_storm'] = (sum(state == 'FAILED' and at >= now - 600 for at, state, _ in rows) >= 20
++                                   and not any(state == 'WORKING' and at >= now - 600 for at, state, _ in rows))
++    if rows and rows[0][1] not in (None, 'WORKING'):
++        since = rows[0][0]
++        for at, state, _ in rows:
++            if state in (None, 'WORKING'):
++                break
++            since = at
++        result['non_working_since'] = since
++    return result
++
++
++def job_counts(db, table, column, successful, states):
++    require(db, table, (column,))
++    placeholders = ','.join('?' for _ in states)
++    rows = db.execute('SELECT CASE WHEN "' + column + '" IN (' + placeholders + ') THEN "' +
++                      column + '" ELSE \'other\' END AS state,COUNT(*) FROM "' + table +
++                      '" GROUP BY 1', states).fetchall()
++    counts = dict.fromkeys(states, 0)
++    counts.update(rows)
++    total = sum(counts.values())
++    return dict(total=total, completed=counts.get(successful, 0), states=counts,
++                ratio=counts.get(successful, 0) / total if total else None)
++
++
++JOB_READERS = {
++    'wechat_video': ('wechat', 'video_card_jobs', 'state', 'indexed',
++                     ('indexed', 'blocked', 'download_unknown', 'queued', 'submitting',
++                      'downloading', 'downloaded', 'download_failed', 'archive_verified')),
++    'wechat_collection': ('wechat', 'receive_collection_jobs', 'state', 'complete',
++                          ('complete', 'processing', 'retry_wait', 'RAW_ARCHIVED_NO_TEXT',
++                           'saved_original_needs_review', 'interrupted', 'source_changed')),
++    'wechat_notes': ('wechat', 'company_note_assets', 'status', 'ready', ('ready',)),
++    'whatsapp_media': ('whatsapp', 'media_jobs', 'status', 'archived',
++                       ('archived', 'none', 'pending_media_url', 'deferred')),
++}
++
++
+ READERS = {
+     'alibaba_inbound': ('inbound', inbound),
+     'alibaba_probe': ('probe', probe),
+-    'wechat_messages': ('wechat', lambda db, now: table_counts(db, 'messages', 'created_at', now)),
++    'wechat_messages': ('wechat', wechat_messages),
+     'wechat_callbacks': ('wechat', lambda db, now: table_counts(db, 'received_callback_archive', 'received_at', now)),
+     'whatsapp_events': ('whatsapp', lambda db, now: table_counts(db, 'events', 'received', now)),
++    'whatsapp_session': ('whatsapp', whatsapp_session),
+     'whatsapp_messages': ('whatsapp', whatsapp_messages),
+ }
+--- a/console/pipeline/service.py
++++ b/console/pipeline/service.py
+@@ -7,16 +7,20 @@
+ from console.channel_plan import resolve_plan
+ from .config import DEFAULTS, minute, resolve_config
+ from .coverage import coverage
++from .jobs import failed_jobs
+ from .readers import MissingSchema, READERS, read_db
++from .scorecard import SESSION_LABELS, scorecard
+ 
+ STATUS = {'ok': '正常', 'slow': '变慢', 'interrupted': '断流', 'never': '从未有',
+           'not_connected': '未接入', 'unavailable': '暂时读不到'}
+ SEVERITY = {'ok': 0, 'not_connected': 1, 'never': 2, 'slow': 3, 'unavailable': 4, 'interrupted': 5}
+ CHANNELS = {'alibaba': '阿里国际站', 'wechat': '微信', 'whatsapp': 'WhatsApp'}
+ LABELS = dict(alibaba_inbound='阿里入站', alibaba_probe='阿里心跳', wechat_messages='微信消息',
+-              wechat_callbacks='微信回调', whatsapp_events='WhatsApp 事件', whatsapp_messages='WhatsApp 消息')
++              wechat_callbacks='微信回调', whatsapp_events='WhatsApp 桥接服务（辅助）',
++              whatsapp_session='WhatsApp 会话状态', whatsapp_messages='WhatsApp 消息')
+ # Reason codes the Win10 collector may report in its strict v1 heartbeat (receiver contract: lowercase snake_case).
+ PROBE_ERRORS = {
++    'pairing_reconnect': ('Win10 的采集网关在线，但浏览器扩展还没有与它重新配对。', '到 Win10：确认 Chrome 里“阿里聊天采集助手”扩展已重新加载并已连接；重新加载只需在扩展程序页点一次，不要卸载。'),
+     'browser_disconnected': ('Win10 的浏览器扩展与采集网关断开了。', '到 Win10：打开 Chrome，确认聊天页（messageManager）、身份页、工作台三个页面都开着，扩展已连接。'),
+     'login_required': ('阿里账号需要重新登录。', '到 Win10 的 Chrome 里重新登录阿里国际站；不要导出登录信息。'),
+     'identity_mismatch': ('页面里的账号或店铺与绑定的不一致。', '到 Win10 核对当前登录的是哪个账号，必要时重新核验绑定。'),
+@@ -32,6 +36,7 @@
+     'wechat_callbacks': '到渠道接入核对微信登录、回调配置和接收服务，再看回调到达时间是否更新。',
+     'whatsapp_events': '到渠道接入查看 WhatsApp 登录状态，并请管理员核对桥接服务和回调归档。',
+     'whatsapp_messages': '到渠道接入查看 WhatsApp 登录状态；若事件仍在进，请管理员核对事件转消息的处理。',
++    'whatsapp_session': '到渠道接入页查看是否需要重新扫码；请管理员查看 WAHA 容器的运行状态。',
+ }
+ 
+ 
+@@ -46,6 +51,26 @@
+     age = max(0, now - last)
+     active = max(0, daytime(now) - daytime(last))
+     return active + max(0, age - active) / day['night_multiplier']
++
++
++def _session_state(item, now, config):
++    if item['total'] == 0:
++        return 'never', '没有可用的会话状态记录，无法确认是否登录成功。', NEXT['whatsapp_session']
++    if item.get('session_status') is None:
++        return 'unavailable', '最近一次会话状态无法识别，不能确认是否登录成功。', NEXT['whatsapp_session']
++    if item['session_status'] == 'WORKING':
++        if now - item['last_seen_at'] > config['whatsapp_session_max_age_seconds']:
++            return 'unavailable', '最后记录为已登录可用，但状态记录已经太旧，需重新核对当前登录状态。', NEXT['whatsapp_session']
++        return 'ok', '最近记录的 WhatsApp 会话已登录可用；本项不是实时在线探测。', '继续观察；有正常业务消息时核对收件箱是否到达。'
++    duration = now - item['non_working_since']
++    item['effective_age_seconds'] = duration
++    stopped = item['restart_storm'] is True or duration > config['thresholds']['whatsapp_session']['interrupted_seconds']
++    retrying = item.get('failed_count_1h_lower_bound', 0) > 0
++    reason = ('WhatsApp 会话没有登录成功，一直在失败重试。' if retrying else
++              'WhatsApp 会话尚未登录可用，当前需要核对启动或扫码状态。')
++    if item['restart_storm'] is True:
++        reason += '近 10 分钟失败至少 20 次且没有登录成功，已判定为重启风暴。'
++    return ('interrupted' if stopped else 'slow'), reason, NEXT['whatsapp_session']
+ 
+ 
+ def _classify(item, now, config, new_whatsapp):
+@@ -55,8 +80,16 @@
+     if key.startswith('alibaba_'):
+         item['thresholds']['day'] = dict(config['alibaba_day'])
+     item.update(effective_age_seconds=None, history_only=False, mix=None)
+-    if key.startswith('whatsapp_') and new_whatsapp and (item['total'] == 0 or item['last_seen_at'] is not None):
+-        return 'ok', '本地还没有联系人，正常。当前没有消息记录，等待第一批联系人和会话。', '开始运营后，到渠道接入确认登录状态；有正常业务消息时再看数据是否到达。'
++    if key == 'whatsapp_session':
++        return _session_state(item, now, config)
++    if key == 'whatsapp_messages' and new_whatsapp:
++        item['new_account_waiting'] = True
++        return 'ok', '会话已登录可用，本地还没有联系人，正常。当前没有消息记录，等待第一批联系人和会话。', '有正常业务消息时再看数据是否到达；登录状态变化后需重新核对。'
++    if key == 'alibaba_inbound':
++        kinds = item['kinds']
++        item['mix'] = {name: dict(count_24h=row['count_24h'],
++            ratio_24h=row['count_24h'] / item['count_24h'] if item['count_24h'] else None,
++            last_arrival_at=row['last_seen_at']) for name, row in kinds.items()}
+     if item['total'] == 0:
+         return 'never', '数据表已接入，但从未收到记录。', NEXT[key]
+     if item['last_seen_at'] is None:
+@@ -64,9 +97,6 @@
+     last = item['last_seen_at']
+     if key == 'alibaba_inbound':
+         kinds = item['kinds']
+-        item['mix'] = {name: dict(count_24h=row['count_24h'],
+-            ratio_24h=row['count_24h'] / item['count_24h'] if item['count_24h'] else None,
+-            last_arrival_at=row['last_seen_at']) for name, row in kinds.items()}
+         item['history_only'] = kinds['history']['count_24h'] > 0 and kinds['live']['count_24h'] == 0
+         last = kinds['live']['last_seen_at']
+         if last is None:
+@@ -77,16 +107,17 @@
+     item['effective_age_seconds'] = age
+     state = ('interrupted' if age > threshold['interrupted_seconds'] else
+              'slow' if age > threshold['slow_seconds'] else 'ok')
+-    subject = '实时消息' if key == 'alibaba_inbound' else '消息' if key == 'wechat_messages' else '数据'
++    subject = ('实时消息' if key == 'alibaba_inbound' else '消息' if key in ('wechat_messages', 'whatsapp_messages')
++               else '桥接服务事件' if key == 'whatsapp_events' else '数据')
+     reason = (f'{subject}最近有更新，未超过变慢阈值。' if state == 'ok' else
+               f'{subject}长时间没有更新，已超过' + ('断流' if state == 'interrupted' else '变慢') + '阈值；需要核对是否业务安静或采集停了。')
+     if item['history_only']:
+         reason = '近 24 小时只有历史在进，没有实时消息；' + reason
+-    if key == 'alibaba_probe' and item.get('probe_state') == 'paused':
++    if key == 'alibaba_probe' and (item.get('probe_state') == 'paused' or item.get('probe_error') == 'pairing_reconnect'):
+         code = item.get('probe_error')
+         known = PROBE_ERRORS.get(code)
+         state = 'interrupted'
+-        reason = ('最近一次心跳报告采集已暂停：' + known[0] if known else
++        reason = ('最近一次心跳报告采集异常：' + known[0] if known else
+                   '最近一次心跳报告采集已暂停' + (f'（原因代码 {code}）' if code else '') + '，实时采集可能停止。')
+         if known:
+             return state, reason, known[1]
+@@ -95,10 +126,11 @@
+ 
+ class PipelineHealth:
+     def __init__(self, *, config=None, config_path=None, paths=None, plan=None, plan_path=None,
+-                 coverage_readers=None, clock=None):
++                 coverage_readers=None, failed_units_reader=None, clock=None):
+         self.config, self.config_path = config, config_path
+         self.paths, self.plan, self.plan_path = paths, plan, plan_path
+         self.coverage_readers, self.clock = coverage_readers or {}, clock or time.time
++        self.failed_units_reader = failed_units_reader
+         # A partial injected source set stays fully isolated from production.
+         if paths is not None:
+             if not paths or set(paths) - set(DEFAULTS['paths']):
+@@ -120,9 +152,13 @@
+                         last_seen_at=None, last_arrival_at=None, count_1h=None, count_24h=None,
+                         hourly=None, time_basis='message_time' if key == 'wechat_messages' else 'arrival',
+                         mix=None, history_only=False, notes=[])
++            if key in ('whatsapp_session', 'whatsapp_events'):
++                item['time_basis'] = 'session_status' if key == 'whatsapp_session' else 'service_event'
++            item['auxiliary'] = key == 'whatsapp_events'
+             try:
+                 with read_db(paths[path_key], config['query_timeout_seconds']) as db:
+-                    snapshot = reader(db, now)
++                    snapshot = (reader(db, now, config['whatsapp_session_event_limit'])
++                                if key == 'whatsapp_session' else reader(db, now))
+                 item.update(snapshot, ready=True)
+             except (FileNotFoundError, MissingSchema):
+                 item.update(status='not_connected', reason='未找到可读取的数据文件或所需表，当前未接入这项统计。',
+@@ -134,11 +170,18 @@
+                             next_step='稍后刷新；若持续出现，请管理员核对数据文件、表结构和查询耗时。')
+             sources.append(item)
+         wa_messages = next(item for item in sources if item['key'] == 'whatsapp_messages')
+-        new_whatsapp = wa_messages['ready'] and wa_messages['total'] == 0 and wa_messages.get('no_contacts') is True
++        wa_session = next(item for item in sources if item['key'] == 'whatsapp_session')
++        new_whatsapp = (wa_messages['ready'] and wa_messages['total'] == 0 and wa_messages.get('no_contacts') is True
++                        and wa_session['ready'] and wa_session.get('session_status') == 'WORKING'
++                        and now - wa_session['last_seen_at'] <= config['whatsapp_session_max_age_seconds'])
+         for item in sources:
+             key = item['key']
+             if item['ready']:
+                 item['status'], item['reason'], item['next_step'] = _classify(item, now, config, new_whatsapp)
++                if key == 'wechat_messages' and item.get('pending_count') and item.get('pending_stalled_age_seconds') is not None:
++                    if item['pending_stalled_age_seconds'] > config['wechat_pending_stuck_seconds']:
++                        item.update(status='interrupted', reason=f"待处理消息积压卡住：还有 {item['pending_count']} 条待处理消息，最久未推进时间已超过阈值；新消息到达不能证明旧积压已处理。",
++                                    next_step='请管理员核对微信消息处理作业和待处理队列；先确认停滞原因及处理结果，再决定如何恢复。')
+                 if item['time_basis'] == 'arrival':
+                     item['last_arrival_at'] = item['last_seen_at']
+                 if item['invalid_timestamps']:
+@@ -147,6 +190,13 @@
+                 item['notes'].append('消息库没有到达时间；本项按消息发生时间统计，到达情况请看微信回调。')
+             if key == 'alibaba_probe':
+                 item['notes'].append('心跳库只保留各账号最新状态，无法还原 1 小时、24 小时或 48 小时的心跳次数。')
++            if key == 'whatsapp_events':
++                item['notes'].append('只反映桥接服务仍在归档事件；包含会话状态事件，不算消息到达，也不参与渠道健康汇总。')
++            if key == 'whatsapp_session':
++                item['session_status_label'] = SESSION_LABELS.get(item.get('session_status'), '未知')
++                item['notes'].append('只读最近的会话状态及是否有登录身份；状态事件不计为消息到达。')
++                if item.get('sample_truncated'):
++                    item['notes'].append('会话事件已达到采样上限；未覆盖完整时间窗口的失败次数显示未知，历史登录时间也可能在采样之外。')
+             if not key.startswith('alibaba_'):
+                 item['notes'].append('来源没有可靠的实时／历史标记，暂不计算实时与历史占比。')
+             item.pop('kinds', None)
+@@ -159,13 +209,14 @@
+             by_key['whatsapp_messages']['reason'] += '事件仍有更新，但事件不等于聊天消息。'
+         channels = []
+         for channel, label in CHANNELS.items():
+-            items = [item for item in sources if item['channel'] == channel]
++            items = [item for item in sources if item['channel'] == channel and not item['auxiliary']]
+             state = max((item['status'] for item in items), key=SEVERITY.get)
+             channels.append(dict(channel=channel, label=label, status=state, status_label=STATUS[state],
+                                  coverage=coverage(channel, self.coverage_readers, now)))
+         counts = Counter(item['status'] for item in channels)
+         summary = '三个渠道：' + '，'.join(f'{counts[key]} {label}' for key, label in STATUS.items() if counts[key])
+         if plan['whatsapp'] in ('not_started', 'planned'):
+-            notes.append('WhatsApp 尚在运营准备阶段；已知没有联系人且没有消息时显示正常，已有消息后仍按阈值检查。')
++            notes.append('WhatsApp 尚在运营准备阶段；只有会话已登录可用且本地没有联系人和消息时才按新号等待处理，登录失败仍会报警。')
+         notes.append('状态按本地记录判断，不能证明平台消息已收全；页面打开时每 60 秒自动检查，也可以手动刷新。')
+-        return dict(generated_at=now, summary=summary, channels=channels, sources=sources, notes=notes)
++        return dict(generated_at=now, summary=summary, channels=channels, sources=sources, notes=notes,
++                    scorecard=scorecard(by_key, paths, config, now), failed_jobs=failed_jobs(self.failed_units_reader, now))
+--- /dev/null
++++ b/console/pipeline/jobs.py
+@@ -0,0 +1,29 @@
++"""Optional failed-unit metadata; no subprocess, privilege or systemd mutation."""
++import math
++import re
++
++
++def failed_jobs(reader, now):
++    result = dict(status='not_connected', items=[], count=None,
++                  reason='后台作业失败清单未接入，请管理员接入只读的服务状态读取。')
++    if reader is None:
++        return result
++    try:
++        rows = reader(now)
++        if rows is None:
++            return result
++        if not isinstance(rows, (tuple, list)) or len(rows) > 100:
++            raise ValueError('失败单元清单无效')
++        items = []
++        for row in rows:
++            unit, at = row['unit'], row.get('failed_at')
++            if not isinstance(unit, str) or not re.fullmatch(r'[A-Za-z0-9_.@:-]{1,160}\.(?:service|timer)', unit):
++                raise ValueError('失败单元名称无效')
++            if at is not None and (type(at) not in (int, float) or not math.isfinite(at) or not 0 < at <= now):
++                raise ValueError('失败时间无效')
++            items.append(dict(unit=unit, failed_at=at))
++        result.update(status='ready', items=items, count=len(items),
++                      reason='以下后台作业失败，请管理员核对服务状态。' if items else '已接入的后台作业目前没有失败记录。')
++    except Exception:
++        result.update(status='unavailable', reason='后台作业失败清单暂时读不到，请管理员核对只读读取服务。')
++    return result
+--- /dev/null
++++ b/console/pipeline/scorecard.py
+@@ -0,0 +1,174 @@
++"""Measured acceptance checks; absent evidence never becomes a pass."""
++import sqlite3
++
++from .readers import JOB_READERS, MissingSchema, job_counts, read_db
++
++RESULTS = {'pass': '达标', 'fail': '不达标', 'unknown': '未知'}
++SESSION_LABELS = {'WORKING': '已登录可用', 'FAILED': '登录失败', 'STARTING': '正在启动',
++                  'STOPPED': '已停止', 'SCAN_QR_CODE': '等待扫码', 'PASSKEY_REQUIRED': '需要通行密钥',
++                  'PASSKEY_CONFIRMATION_REQUIRED': '等待确认通行密钥'}
++
++
++def age(seconds):
++    if seconds is None:
++        return '未知'
++    if seconds < 60:
++        return f'{seconds:.0f} 秒'
++    if seconds < 3600:
++        return f'{seconds / 60:.1f} 分钟'
++    return f'{seconds / 3600:.1f} 小时'
++
++
++def metric(key, name, target, actual, source, method, result='unknown', *, required=True):
++    return dict(key=key, name=name, target=target, actual=actual, result=result,
++                result_label=RESULTS[result], source=source, method=method, required=required)
++
++
++def _age_metric(key, name, item, now, target, limit):
++    last = item.get('last_seen_at')
++    measured = now - last if last is not None else None
++    result = ('pass' if measured <= limit else 'fail') if item['ready'] and measured is not None else 'unknown'
++    return metric(key, name, target, age(measured) + ('前' if measured is not None else ''), item['label'],
++                  '按服务器归档的最后接收时间计算实际空档，不套用夜间折扣。', result)
++
++
++def _jobs(paths, config):
++    result = {}
++    for key, (path_key, table, column, successful, states) in JOB_READERS.items():
++        item = dict(ready=False, reason='所需表或列未接入，请管理员核对只读来源。')
++        try:
++            with read_db(paths[path_key], config['query_timeout_seconds']) as db:
++                snapshot = job_counts(db, table, column, successful, states)
++            item.update(snapshot, ready=True, reason='按当前保留的全部登记作业统计；不包含未登记作业。')
++        except (FileNotFoundError, MissingSchema):
++            pass
++        except (sqlite3.Error, OSError, ValueError):
++            item['reason'] = '统计暂时读不到，请管理员核对只读权限、表结构和查询耗时。'
++        result[key] = item
++    return result
++
++
++def _completion(key, name, item, source, method):
++    known = item['ready'] and item['total'] > 0
++    actual = f"{item['completed']} / {item['total']}（{item['ratio']:.1%}）" if known else '暂无登记作业' if item['ready'] else '未知'
++    return metric(key, name, '已登记作业完成占比 100%', actual, source,
++                  method + ' ' + item['reason'], ('pass' if item['completed'] == item['total'] else 'fail') if known else 'unknown')
++
++
++def _alibaba(sources, now):
++    incoming, probe = sources['alibaba_inbound'], sources['alibaba_probe']
++    live = (incoming.get('mix') or {}).get('live')
++    live_last = live['last_arrival_at'] if live else None
++    gap = now - live_last if live_last is not None else None
++    daytime = 8 <= ((now + 8 * 3600) % 86400) / 3600 < 22
++    day_start = ((now + 8 * 3600) // 86400) * 86400
++    day_gap = now - max(live_last or day_start, day_start)
++    a5 = ('fail' if day_gap > 7200 else 'pass' if live_last is not None and live_last >= day_start else 'unknown') if daytime and incoming['ready'] else 'unknown'
++    items = [metric('live_24h', '近 24 小时实时标记消息数', '供核对业务量，无最低消息数',
++                    str(live['count_24h']) + ' 条' if live else '未知', '阿里入站 · inbound.created_at / history',
++                    '滚动 24 小时，仅计 history=false 且不是 history_import 的记录；实时标记不等于来源验收。', required=False),
++             metric('last_live_age', '最后一次实时到达距今', '供核对最后接收时间',
++                    age(gap) + ('前' if gap is not None else ''), '阿里入站 · 实时标记记录的 created_at',
++                    '按实际墙上时间计算，不套用作息折扣；当前无实时记录时为未知。', required=False),
++             metric('A5', 'A5 实时到达空档', '北京时间 08:00–22:00 持续到达；连续 2 小时无实时需说明',
++                    '当前白天空档 ' + age(day_gap) if daytime and incoming['ready'] else '未知；当前不在白天验收时段或来源未接入',
++                    '阿里入站 · 实时标记记录的 created_at',
++                    '仅检查当前白天，从当天 08:00 与最后实时到达的较晚者开始计时；超过 2 小时需说明业务安静或排查停采。夜间或白天尚无消息且不足 2 小时为未知。', a5),
++             metric('probe_state', '心跳状态与原因', '采集未暂停且状态可识别',
++                    probe['status_label'] + '；' + probe['reason'], '阿里心跳 · probe_state 最新快照',
++                    '网关心跳在线不能证明扩展已配对；已知错误也会报警。',
++                    ('fail' if probe['status'] == 'interrupted' else 'pass' if probe['status'] == 'ok' and
++                     probe.get('probe_state') in ('running', 'idle') and not probe.get('probe_error') else 'unknown')),
++             _age_metric('probe_age', '心跳最近接收距今', probe, now, '不超过 5 分钟', 300)]
++    for key, name, target, missing in (
++        ('A1', '心跳连续性', '24 小时按 120 秒发送，到达率 ≥99%，不得连续漏 3 次', '缺少逐次心跳流水；最新账号快照不能计算到达率或连续漏收。'),
++        ('A2', '实时延迟', '页面出现至持久确认：P95 ≤120 秒，最大 ≤10 分钟', '缺少校准后的页面出现时间与持久确认配对样本、时钟校准证据。'),
++        ('A3', '每日对账', '页面新消息数与实时入库数相等，连续 3 天差异为 0，差异须说明', '缺少页面侧每日新消息计数和连续三天的对账记录。'),
++        ('A4', '去重', '消息标识或指纹零重复，重放同批消息不增加行数', '缺少受控重放前后计数和去重验收记录；当前保留行数不能证明重放通过。'),
++        ('A6', '断点恢复', '网关重启、扩展重载、网络短断分别在 10 分钟内恢复，无丢失、重复、游标回退，保留回执', '缺少三类现场演练与服务器读回结果。'),
++        ('A7', '时钟', '时钟偏差 <30 秒；偏差 ≥300 秒暂停并报时钟异常', '缺少可独立核对的时钟偏差及暂停验证；服务器时间字段本身不能证明客户端已校时。'),
++        ('A8', '连续运行', '满足 A1–A6 后连续 72 小时无需人工干预，包含完整白天业务时段', '缺少已通过的 A1–A6 和连续 72 小时巡检记录。'),
++    ):
++        items.append(metric(key, key + ' ' + name, target, '未知', '尚缺验收记录', missing))
++    return items
++
++
++def _wechat(sources, jobs, config, now):
++    messages, callbacks = sources['wechat_messages'], sources['wechat_callbacks']
++    message_count, callback_count = messages['count_24h'], callbacks['count_24h']
++    ratio = callback_count / message_count if callback_count is not None and message_count else None
++    actual = (f'回调 {callback_count} 条 / 消息 {message_count} 条；比值 {ratio:.2f}' if ratio is not None else
++              f'回调 {callback_count} 条 / 消息 {message_count} 条；消息数为零，无比值' if message_count == 0 and callback_count is not None else '未知')
++    items = [metric('callbacks_to_messages', '近 24 小时回调与消息对比', '仅供参考，不作为丢失证据', actual,
++                    '微信消息库 · received_callback_archive / messages',
++                    '回调按 received_at，消息按 created_at；时间口径、事件范围和去重方式不同，不能一一对应。', required=False),
++             metric('last_arrival', '消息最后到达', '能够独立核对消息接收时间',
++                    '未知；最近消息发生于 ' + age(now - messages['last_seen_at']) + '前' if messages['last_seen_at'] is not None else '未知；没有可核对的消息接收时间',
++                    '微信消息库 · messages.created_at', '现有消息表没有接收时间，不能把发生时间或最后一条回调时间当作消息到达。')]
++    limit = config['wechat_pending_stuck_seconds']
++    pending = messages.get('pending_count')
++    stalled = messages.get('pending_stalled_age_seconds')
++    known = messages.get('pending_ready') and (pending == 0 or stalled is not None and not messages['pending_invalid_timestamps'])
++    result = ('fail' if pending and stalled is not None and stalled > limit else 'pass' if known else 'unknown')
++    actual = f"{pending} 条；最老消息年龄 {age(messages.get('pending_oldest_age_seconds'))}；最久未推进 {age(stalled)}" if pending is not None else '未知'
++    items.append(metric('pending', '待处理积压', '没有停滞超过 ' + age(limit) + ' 的待处理消息', actual,
++                        '微信消息库 · messages.status / created_at / updated_at',
++                        '只计 pending；最老年龄按消息发生时间，停滞按 updated_at，缺失时用 created_at，均不是到达年龄。', result))
++    for key, name, source, method in (
++        ('wechat_video', '视频号媒体索引占比', '微信消息库 · video_card_jobs.state', 'indexed / 全部登记作业。'),
++        ('wechat_collection', '附件采集完成占比', '微信消息库 · receive_collection_jobs.state', 'complete / 全部登记作业；complete 只表示作业结束，不保证解析、索引或原件可用。'),
++        ('wechat_notes', '笔记附件就绪占比', '微信消息库 · company_note_assets.status', 'ready / 全部登记资源；不以 archive_status 代替正文就绪状态。'),
++    ):
++        items.append(_completion(key, name, jobs[key], source, method))
++    video = jobs['wechat_video']
++    for state, name in (('blocked', '视频号阻塞作业'), ('download_unknown', '视频号下载结果未知作业')):
++        count = video['states'][state] if video['ready'] else None
++        items.append(metric('video_' + state, name, '0 条', str(count) + ' 条' if count is not None else '未知',
++                            '微信消息库 · video_card_jobs.state', '单独列出，不自动重试结果未知的下载。' + video['reason'],
++                            ('fail' if count else 'pass') if count is not None and video['total'] else 'unknown'))
++    return items
++
++
++def _whatsapp(sources, jobs, config, now):
++    session, messages = sources['whatsapp_session'], sources['whatsapp_messages']
++    state = session.get('session_status')
++    failed = session.get('failed_count_24h')
++    lower = session.get('failed_count_24h_lower_bound', 0)
++    working = session.get('last_working_at')
++    media = jobs['whatsapp_media']
++    labels = {'archived': '已归档', 'none': '无媒体', 'pending_media_url': '等待媒体地址', 'deferred': '暂缓处理', 'other': '其他或未识别'}
++    actual = '；'.join(f'{labels[key]} {count} 条' for key, count in media.get('states', {}).items()) if media['ready'] else '未知'
++    items = [metric('session_working', '会话是否已登录可用', '会话为已登录可用，且状态记录不超过 ' + age(config['whatsapp_session_max_age_seconds']),
++                    SESSION_LABELS.get(state, '未知') + '；' + session['reason'], 'WhatsApp 事件库 · 最近会话状态',
++                    '仅提取 payload.status 和是否有 me；不是实时探测。',
++                    'pass' if session['status'] == 'ok' and state == 'WORKING' else 'fail' if state and state != 'WORKING' else 'unknown'),
++             metric('last_working', '最后一次已登录可用', '用于核对会话恢复时间',
++                    age(now - working) + '前' if working is not None else '最近采样中没有记录',
++                    'WhatsApp 事件库 · 最近会话状态', '只在有界采样中查找；超出采样的历史不能补算。', required=False),
++             metric('failed_24h', '近 24 小时登录失败次数', '0 次',
++                    str(failed) + ' 次' if failed is not None else f'未知；已采样至少 {lower} 次' if session.get('sampled_events') else '未知；没有可用的会话状态样本',
++                    'WhatsApp 事件库 · 会话状态为登录失败', '滚动 24 小时，采样未覆盖整个窗口时不报精确计数。',
++                    ('fail' if failed else 'pass') if failed is not None else 'fail' if lower else 'unknown'),
++             _age_metric('last_arrival', '消息最后到达', messages, now, '不超过 24 小时；已登录的新号无消息时可等待', 86400),
++             metric('media_jobs', '媒体作业状态分布', '已登记的媒体作业全部归档，无等待或暂缓', actual,
++                    'WhatsApp 消息库 · media_jobs.status',
++                    '此表来自既有知识处理作业，含无媒体消息；不能证明 P2a 入站媒体链路已接通。' + media['reason'],
++                    ('pass' if media['states']['archived'] + media['states']['none'] == media['total'] else 'fail')
++                    if media['ready'] and media['total'] > media['states']['none'] else 'unknown')]
++    if messages.get('new_account_waiting'):
++        items[3].update(actual='会话已登录，本地没有联系人和消息，等待正常业务', result='pass', result_label=RESULTS['pass'])
++    return items
++
++
++def scorecard(sources, paths, config, now):
++    jobs = _jobs(paths, config)
++    result = []
++    for channel, label, items in (
++        ('alibaba', '阿里国际站', _alibaba(sources, now)),
++        ('wechat', '微信', _wechat(sources, jobs, config, now)),
++        ('whatsapp', 'WhatsApp', _whatsapp(sources, jobs, config, now)),
++    ):
++        required = [item['result'] for item in items if item['required']]
++        status = 'fail' if 'fail' in required else 'unknown' if not required or 'unknown' in required else 'pass'
++        result.append(dict(channel=channel, label=label, result=status, result_label=RESULTS[status], metrics=items))
++    return result

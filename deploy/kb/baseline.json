@@ -1,0 +1,33 @@
+{
+  "base": "/opt/imgw/wechat-kb-dual-live-v1",
+  "sha256": {
+    "live_loader.py": "917566b86d9bb71476e59bc1f4ee3006efcd69470e52dadeb93c522aa011f609",
+    "video_knowledge/kb_unknown_isolation.py": "e2d5f4e3d7b8fd83b60a5a137d3a795e15551028cb4676b3ae6412793e5c1bb2",
+    "video_knowledge/quota_isolation.py": "27fc420444a491a57586e0d2cc0c744af5c4374746987253dac13d49d484f1b3",
+    "video_knowledge/kb_model_runtime.py": "6fb2f128c6113d31226cbfd5c12f0adebcd16bd9cd90b645620203e4111cd5b0",
+    "video_knowledge/kb_extract.py": "f6999348a2b8eea6a5c367a58b7ddc0fc45f7e79b053c10d1881d1121c044842",
+    "video_knowledge/kb_profile.py": "b07326f686ed6ea70e4d492743a19f277490e2609aa8a8c7ab1dec20368d1c2e",
+    "video_knowledge/kb_live.py": "6ab0846546e45c1acd53e038124ad2322c61cd4468f6c47ead2a8910ca21c146"
+  },
+  "patches": [
+    "unknown-isolation-v2.patch",
+    "live-increments-v1.patch",
+    "source-quarantine-v1.patch"
+  ],
+  "patch_sha256": {
+    "unknown-isolation-v2.patch": "e84bf868d5e9afa4e7c566692835129ce96ee6e1e14954f4a2163b77e806d2b9",
+    "live-increments-v1.patch": "30af928aa1da1bdb0e393447d3d1207ece6389daf527574675c079cb8ec3683d",
+    "source-quarantine-v1.patch": "9c05e11a630b2d30898a26e4d0a2f1bc3547961e8eeb2b3e28c6c2f7221f7325"
+  },
+  "reference_config_sha256": {
+    "/etc/imgw/kb-live-dual-v1.json": "50a93ef522fa5f04088d78a8ead840d12c06befabce9b09445ecf482f38d6f31",
+    "/etc/imgw/kb-two-unknown-manifest.json": "cf13ffac78dcb96bc930099da4aeaafc51b7e886043ea8492ddac3a98fb2247e",
+    "/etc/imgw/kb-model-runtime.json": "5859139bd10594656a5d0392e65c43e1ff5c07e369a4124f2ec0ff06c1901713",
+    "/etc/systemd/system/imgw-kb-live.service": "5dc677d788cb6fde4b4125d8c2cd3c81861a230a74e6c4ec8f0f2b8d7662a508",
+    "/etc/systemd/system/imgw-kb-live.service.d/dual-isolation.conf": "483dd3686c60b5d367f7919a82721f87e2f3c307e9074bf9533b01c207b073aa"
+  },
+  "reference_recovery_boundary_existed": false,
+  "new_files": {
+    "video_knowledge/kb_source_gate.py": "7caf0295cf31019fdda12979cbeb14f917fba636a6cd6366d2153276b01ed2a4"
+  }
+}

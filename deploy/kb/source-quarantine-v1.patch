@@ -1,0 +1,207 @@
+--- a/live_loader.py
++++ b/live_loader.py
+@@ -3,7 +3,7 @@
+ from pathlib import Path
+ BASE=Path('/opt/imgw/wechat-kb-dual-live-v1')
+ MANIFEST=Path('/etc/imgw/kb-live-dual-v1.json')
+-MODULES=('kb_unknown_isolation','quota_isolation','kb_model_runtime','kb_extract','kb_profile','kb_live')
++MODULES=('kb_unknown_isolation','quota_isolation','kb_source_gate','kb_model_runtime','kb_extract','kb_profile','kb_live')
+ 
+ def checked(path):
+     for p in (path,*path.parents):
+@@ -16,6 +16,8 @@
+ def load():
+     manifest=json.loads(checked(MANIFEST))
+     if manifest.get('schema')!='kb-live-dual-v1' or set(manifest.get('modules',{}))!=set(MODULES):raise RuntimeError('manifest_invalid')
++    quarantine=checked(Path('/etc/imgw/kb-source-quarantine-v1.json'))
++    if hashlib.sha256(quarantine).hexdigest()!=manifest.get('source_quarantine_sha256'):raise RuntimeError('source_quarantine_changed')
+     boundary=checked(Path('/etc/imgw/kb-live-recovery-v1.json'))
+     if hashlib.sha256(boundary).hexdigest()!=manifest.get('recovery_boundary_sha256'):raise RuntimeError('recovery_boundary_changed')
+     import video_knowledge as pkg
+@@ -28,6 +30,7 @@
+         spec.loader.exec_module(module)
+     if pkg.kb_live.kb_model_runtime is not pkg.kb_model_runtime or pkg.kb_extract.kb_model_runtime is not pkg.kb_model_runtime or pkg.kb_live.kb_profile is not pkg.kb_profile:raise RuntimeError('mixed_module_graph')
+     pkg.kb_live.RECOVERY_BOUNDARY_SHA256=manifest['recovery_boundary_sha256']
++    pkg.kb_live.SOURCE_QUARANTINE_SHA256=manifest['source_quarantine_sha256']
+     return pkg.kb_live
+ 
+ if __name__=='__main__':
+--- a/video_knowledge/kb_extract.py
++++ b/video_knowledge/kb_extract.py
+@@ -299,6 +299,8 @@
+ def run_units(db, ctx, now: int, chatrooms, *, matrix, limit=60) -> dict:
+     if type(now) is not int or now < 0 or type(limit) is not int or limit < 1:
+         raise ValueError('arguments_invalid')
++    if getattr(matrix, 'isolation_enabled', False) and '_kb_live_rows' not in ctx:
++        raise kb_model_runtime.ModelError('kb_model_hold')
+     kb_store.initialize(db)
+     result = {'units': 0, 'done': 0, 'no_facts': 0, 'failed': 0,
+               'no_second_reader': 0, 'facts': 0, 'served': {}, 'more': False}
+@@ -309,6 +311,11 @@
+     if hasattr(matrix, 'quarantine_preflight'):
+         quarantined = matrix.quarantine_preflight([kb_model_runtime.sha(prompt_for(unit)) for unit in all_units])
+     for unit in all_units:
++        if '_kb_live_rows' in ctx:
++            # Recheck the immutable full source before either reader/cache path.
++            matrix.check_sources([ctx['_kb_live_rows'][row['evidence_id']]
++                                  for row in unit['rows']],
++                                 kb_model_runtime.sha(prompt_for(unit)))
+         if _prior(db, unit, now):
+             continue
+         if result['units'] >= limit:
+--- a/video_knowledge/kb_live.py
++++ b/video_knowledge/kb_live.py
+@@ -30,6 +30,7 @@
+ BUDGET_CODE = 'qwen_matrix_budget_exhausted'
+ RECOVERY_BOUNDARY = kb_model_runtime.RECOVERY_BOUNDARY
+ RECOVERY_BOUNDARY_SHA256 = None
++SOURCE_QUARANTINE_SHA256 = None
+ RECOVERY_DB = Path(os.environ.get('OPS_KB_RECOVERY_DB', '/var/lib/imgw/ops-app/kb-live-recovery.sqlite3'))
+ 
+ 
+@@ -152,6 +153,8 @@
+             or value['isolation_sha256'] != matrix.manifest_sha256):
+         raise kb_model_runtime.ModelError('kb_model_policy_invalid')
+     matrix.recovery_boundary_sha256 = pinned
++    matrix.source_quarantine_sha256 = SOURCE_QUARANTINE_SHA256
++    matrix.source_boundary()
+     return value['after']
+ 
+ 
+@@ -161,9 +164,19 @@
+     if type(after) is not int or after <= 0:
+         raise ValueError('recovery_boundary_invalid')
+     epoch = kb_model_runtime.sha(kb_model_runtime.canon({
+-        'after': after, 'isolation_sha256': matrix.manifest_sha256}))
++        'after': after, 'isolation_sha256': matrix.manifest_sha256,
++        'source_quarantine_sha256': matrix.source_quarantine_sha256}))
+     selected = set()
+     snapshots = {}
++    authorized = list(kb_authorized(db, ctx))
++    candidates = [row for row in authorized
++                  if row['source_created_at'] is not None and row['created_at'] is not None
++                  and _seconds(row['source_created_at']) > after
++                  and _seconds(row['created_at']) > after
++                  and row['price_kind'] != 'customer_inquiry'
++                  and row['source_kind'] != 'historical_message']
++    # Reject reused unknown evidence before any recovery/schema/watermark write.
++    matrix.check_sources(candidates)
+     with closing(private_store.open_private_db(RECOVERY_DB)) as recovery:
+         recovery.execute('PRAGMA synchronous=FULL')
+         recovery.execute('BEGIN IMMEDIATE')
+@@ -174,7 +187,7 @@
+             if previous is not None and previous[0] != epoch:
+                 raise ValueError('recovery_boundary_changed')
+             recovery.execute("INSERT OR IGNORE INTO recovery_epoch VALUES('cutover', ?)", (epoch,))
+-            for row in kb_authorized(db, ctx):
++            for row in authorized:
+                 role = 'learning' if row['chatroom_id'] in ctx.get('_learning', {}) else 'supplier'
+                 source_key = kb_model_runtime.sha(row['evidence_id'])
+                 fingerprint = kb_model_runtime.sha(kb_model_runtime.canon({
+--- a/video_knowledge/kb_model_runtime.py
++++ b/video_knowledge/kb_model_runtime.py
+@@ -15,11 +15,13 @@
+ import sys
+ import time
+ from . import kb_unknown_isolation as isolation
++from . import kb_source_gate as source_gate
+ 
+ POLICY = Path('/etc/imgw/kb-model-runtime.json')
+ ROOT = Path('/var/lib/imgw/wechat/kb-model-runtime')
+ ISOLATION_MANIFEST = Path('/etc/imgw/kb-two-unknown-manifest.json')
+ RECOVERY_BOUNDARY = Path('/etc/imgw/kb-live-recovery-v1.json')
++SOURCE_QUARANTINE = Path('/etc/imgw/kb-source-quarantine-v1.json')
+ SAFE_CODES = frozenset({
+     'qwen_matrix_ledger_invalid', 'qwen_matrix_ledger_not_private',
+     'qwen_matrix_policy_invalid', 'qwen_matrix_call_failed',
+@@ -133,7 +135,28 @@
+         self.manifest_sha256 = manifest_sha256
+         self.root = Path(policy['root'])
+ 
++    def source_boundary(self):
++        pinned = getattr(self, 'source_quarantine_sha256', None)
++        need(pinned is not None, 'kb_model_policy_invalid')
++        raw = restricted(SOURCE_QUARANTINE, owner=0, limit=1048576)
++        need(sha(raw) == pinned, 'kb_model_dependency_changed')
++        try:
++            value = json.loads(raw)
++            source_gate.bind_wechat(value, self.manifest)
++            return value
++        except (ValueError, KeyError, TypeError):
++            raise ModelError('kb_model_hold') from None
++
++    def check_sources(self, rows, prompt_sha256=None):
++        value = self.source_boundary()
++        try:
++            source_gate.check(rows, value, prompt_sha256)
++        except (ValueError, KeyError, TypeError):
++            raise ModelError('kb_model_hold') from None
++
+     def boundary(self):
++        if getattr(self, 'source_quarantine_sha256', None) is not None:
++            self.source_boundary()
+         pinned = getattr(self, 'recovery_boundary_sha256', None)
+         if pinned is not None:
+             need(sha(restricted(RECOVERY_BOUNDARY, owner=0)) == pinned, 'kb_model_dependency_changed')
+--- /dev/null
++++ b/video_knowledge/kb_source_gate.py
+@@ -0,0 +1,59 @@
++"""冻结未知请求的来源；只校验摘要，不读取来源、凭据或调用模型。"""
++from __future__ import annotations
++
++import hashlib
++import re
++
++
++def _need(value):
++    if not value:
++        raise ValueError('未知来源隔离清单不完整，请重新核对四条未知请求')
++
++
++def digest(value):
++    return hashlib.sha256(value.encode('utf-8')).hexdigest()
++
++
++def verify(value):
++    _need(type(value) is dict and set(value) == {'schema', 'holds'}
++          and value['schema'] == 'kb-source-quarantine-v1'
++          and type(value['holds']) is list and len(value['holds']) == 4)
++    channels = []
++    requests = set()
++    for row in value['holds']:
++        _need(type(row) is dict and set(row) == {
++            'channel', 'request_sha256', 'source_keys', 'source_sha256',
++            'content_sha256', 'prompt_sha256'})
++        channels.append(row['channel'])
++        for key in ('request_sha256', 'prompt_sha256'):
++            _need(type(row[key]) is str and re.fullmatch('[0-9a-f]{64}', row[key]))
++        _need(row['request_sha256'] not in requests)
++        requests.add(row['request_sha256'])
++        for key in ('source_keys', 'source_sha256', 'content_sha256'):
++            _need(type(row[key]) is list and bool(row[key])
++                  and all(type(x) is str and re.fullmatch('[0-9a-f]{64}', x) for x in row[key])
++                  and len(set(row[key])) == len(row[key]))
++    _need(channels.count('wechat') == 3 and channels.count('alibaba') == 1)
++    return value
++
++
++def check(rows, quarantine, prompt_sha256=None):
++    value = verify(quarantine)
++    keys = {key for hold in value['holds'] for key in hold['source_keys']}
++    originals = {key for hold in value['holds'] for key in hold['source_sha256']}
++    bodies = {key for hold in value['holds'] for key in hold['content_sha256']}
++    prompts = {hold['prompt_sha256'] for hold in value['holds']}
++    _need(prompt_sha256 is None or prompt_sha256 not in prompts)
++    for row in rows:
++        _need(isinstance(row['evidence_id'], str) and isinstance(row['body_text'], str))
++        if (digest(row['evidence_id']) in keys or digest(row['body_text']) in bodies
++                or row['source_sha256'] in originals):
++            raise ValueError('资料命中永久隔离的未知请求，请保留原记录并交总指挥核对')
++
++
++def bind_wechat(quarantine, isolation):
++    verify(quarantine)
++    actual = {(row['request_sha256'], row['prompt_sha256'])
++              for row in quarantine['holds'] if row['channel'] == 'wechat'}
++    expected = {(row['checkpoint_sha256'], row['prompt_sha256']) for row in isolation['holds']}
++    _need(len(expected) == 3 and actual == expected)

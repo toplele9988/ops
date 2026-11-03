@@ -1,0 +1,199 @@
+# R3-D receiver v2.1 -> v2.2; apply only to verified source copies.
+# icbu_inbound_receiver.py baseline SHA-256: 49481feb23f44d381418ac4de7eed3d05f429e3b1e2c155b02efacd76b287f5d
+# icbu_attachments.py baseline SHA-256: f81a670a3f67e34004c64d8d0ac12eba7c85572857c4ba3a040970ed476900ae
+--- a/icbu_inbound_receiver.py
++++ b/icbu_inbound_receiver.py
+@@ -1,6 +1,6 @@
+ #!/usr/bin/env python3
+-# Production v2 baseline SHA-256: d2bc8fbb487ee1c4cf8ee3f13af31438dce3484773b44de84a8f48028234fe1b
+-"""ICBU inbound candidate. No browser control and no Alibaba send capability."""
++# Production v2.1 baseline SHA-256: 49481feb23f44d381418ac4de7eed3d05f429e3b1e2c155b02efacd76b287f5d
++"""ICBU inbound v2.2 candidate. No browser control or Alibaba send capability."""
+ from __future__ import annotations
+ 
+ import argparse
+@@ -17,6 +17,7 @@
+ import sqlite3
+ import stat
+ import subprocess
++import sys
+ import tempfile
+ import threading
+ import time
+@@ -294,6 +295,7 @@
+         rich = bool(payload.get("attachments") or payload.get("cards"))
+         request_sha256 = request_sha256 or hashlib.sha256(compact(payload).encode("utf-8")).hexdigest()
+         guard = self.attachments.guard() if rich and self.attachments else contextlib.nullcontext()
++        response = None
+         try:
+             with guard:
+                 response, metadata = self._receive(payload, now=now, request_sha256=request_sha256)
+@@ -302,9 +304,17 @@
+                                                    request_sha256=request_sha256)
+                 return response
+         except AttachmentRejected as exc:
++            if rich and exc.code == 'attachment_storage_unavailable':
++                # 主库保存完整元数据供同事件重放补齐；不确认附件已登记或已到达。
++                if response is None:
++                    response, _ = self._receive(payload, now=now, request_sha256=request_sha256,
++                                                check_attachments=False)
++                return dict(response, attachments_pending=True,
++                            attachments_storage='unavailable',
++                            message='消息已保存，附件关联待补。请恢复附件存储后，用原事件编号核对并补全资料')
+             raise Rejected(exc.code, exc.status) from None
+ 
+-    def _receive(self, payload, *, now=None, request_sha256):
++    def _receive(self, payload, *, now=None, request_sha256, check_attachments=True):
+         now = time.time() if now is None else now
+         keys = []
+         if payload["message_id"]:
+@@ -382,7 +392,8 @@
+                             # retain their original dedup keys without a new link.
+                             continue
+                 metadata = [dict(merged, event_id=event) for event in sorted(events)]
+-                self.attachments.check_messages(inbound_id, metadata)
++                if check_attachments:
++                    self.attachments.check_messages(inbound_id, metadata)
+             observed = payload.get("observed_at")
+             skew = now - datetime.fromisoformat(observed).timestamp() if observed else None
+             db.execute("""INSERT OR IGNORE INTO inbound_observations
+@@ -672,6 +683,10 @@
+         self.attachment_cleanup_error = None
+         self._maintenance = None
+         super().__init__(address, Handler)
++        self._mark_orphans(time.time())
++        status = self.store.attachments.storage_status()
++        print('附件存储：' + ('可用（ok）' if status == 'ok' else
++              '暂不可用（unavailable），文字入库继续；请恢复附件存储后核对并补全附件'), file=sys.stderr, flush=True)
+ 
+     def service_actions(self):
+         now = time.time()
+@@ -796,6 +811,7 @@
+             if self.path == "/healthz":
+                 self.reply(200, {"ok": True, "service": "icbu-inbound", "protocol_schema_version": 2,
+                                  "database_schema_version": 2,
++                                 "attachments_storage": self.server.store.attachments.storage_status(),
+                                  "attachments_cleanup_ok": self.server.attachment_cleanup_error is None})
+                 return
+             self.authenticate()
+@@ -905,7 +921,8 @@
+             response = self.server.store.receive(payload, now=received_at,
+                                                  request_sha256=hashlib.sha256(raw).hexdigest())
+             self.server.wake.set()
+-            self.reply(200 if response["duplicate"] else 202, response)
++            self.reply(202 if response.get("attachments_pending") else
++                       (200 if response["duplicate"] else 202), response)
+         self.guarded(post)
+ 
+ 
+@@ -933,11 +950,12 @@
+         parser.error("invalid port")
+     if args.attachments_max_total_bytes < 1 or not math.isfinite(args.orphan_hours) or args.orphan_hours <= 0:
+         parser.error("附件容量上限和孤儿保留小时数必须大于零")
++    if os.environ.get('ICBU_V22_TEST_DIR') and (args.bind != '127.0.0.1' or args.port == 8791):
++        parser.error('存储故障自测只能使用回环测试端口，不能使用8791')
+     policy = live.load_policy(args.live_draft_policy, read_restricted)
+     attachments = AttachmentStore(args.attachments_db, args.attachments_root,
+                                   max_total_bytes=args.attachments_max_total_bytes,
+                                   orphan_hours=args.orphan_hours)
+-    attachments.mark_orphans()
+     store = Store(args.db, live_policy=policy, attachments=attachments)
+     server = Server((args.bind, args.port), store, token)
+     # Network receiver only persists admissions. A separate sandboxed worker
+--- a/icbu_attachments.py
++++ b/icbu_attachments.py
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+ """阿里 v2 附件按不透明字节归档；不解析、不执行、不访问来源网址。
+ 
+-附件模块 v2 生产基线 sha256: b76a97da8f478c6d5244c5a2cba4371cbf8c676136e5f2929afad8c9985efb37
++附件模块 v2.2 候选；v2.1 基线 sha256: f81a670a3f67e34004c64d8d0ac12eba7c85572857c4ba3a040970ed476900ae
+ """
+ from __future__ import annotations
+ 
+@@ -358,16 +358,52 @@
+         self._root_identity = None
+         self._parent_identity = None
+         self._archive_identity = None
++        self._initialized = False
++        test_directory = os.environ.get('ICBU_V22_TEST_DIR')
++        self._test_directory = Path(test_directory) if test_directory else None
++        _require(self._test_directory is None or self._test_directory.is_absolute()
++                 and Path('/tmp') in self._test_directory.parents,
++                 'attachment_configuration_invalid', 503)
++        try:
++            with self.guard():
++                pass
++        except AttachmentRejected as exc:
++            # 文字入库不依赖附件盘；配置、版本及不安全路径仍须明确拒绝。
++            if exc.code != 'attachment_storage_unavailable':
++                raise
++
++    def _initialize(self):
++        if self._initialized:
++            return
++        with self._connect() as db:
++            version = db.execute('PRAGMA user_version').fetchone()[0]
++            _require(version in (0, 1), 'attachment_database_version_invalid', 503)
++            db.execute('PRAGMA journal_mode=WAL')
++            db.executescript(SCHEMA)
++        self._initialized = True
++
++    def _check_test_storage(self):
++        # 仅供临时实例故障演练；不创建目录，不接受 /tmp 外路径或符号链接。
++        if self._test_directory is None:
++            return
++        directory = _directory(self._test_directory, create=False)
++        try:
++            try:
++                info = os.stat('attachments-unavailable', dir_fd=directory, follow_symlinks=False)
++            except FileNotFoundError:
++                return
++            _check(info)
++            raise AttachmentRejected('attachment_storage_unavailable', 503)
++        finally:
++            os.close(directory)
++
++    def storage_status(self):
+         try:
+             with self.guard(), self._connect() as db:
+-                version = db.execute('PRAGMA user_version').fetchone()[0]
+-                _require(version in (0, 1), 'attachment_database_version_invalid', 503)
+-                db.execute('PRAGMA journal_mode=WAL')
+-                db.executescript(SCHEMA)
++                db.execute('SELECT 1').fetchone()
++            return 'ok'
+         except AttachmentRejected:
+-            raise
+-        except (OSError, sqlite3.Error, ValueError):
+-            raise AttachmentRejected('attachment_storage_unavailable', 503) from None
++            return 'unavailable'
+ 
+     def _check_archive(self):
+         if self.archive_root is None:
+@@ -400,6 +436,7 @@
+                 return
+             root = lock = None
+             try:
++                self._check_test_storage()
+                 self._check_archive()
+                 root = _directory(self.root, create=self.archive_root is None)
+                 identity = os.fstat(root)
+@@ -410,13 +447,17 @@
+                 lock = _file(root, '.attachments.lock', os.O_RDWR | os.O_CREAT)
+                 fcntl.flock(lock, fcntl.LOCK_EX)
+                 self._local.root = root
++                self._initialize()
+                 yield root
++                self._check_test_storage()
+                 self._check_archive()
+             except AttachmentRejected:
+                 raise
+             except TimeoutError:
+                 raise AttachmentRejected('attachment_upload_timeout', 408) from None
+             except OSError as exc:
++                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
++                    raise AttachmentRejected('attachment_storage_unsafe', 503) from None
+                 full = exc.errno in (errno.ENOSPC, errno.EDQUOT)
+                 raise AttachmentRejected('attachment_disk_full' if full else 'attachment_storage_unavailable', 507 if full else 503) from None
+             except sqlite3.Error as exc:

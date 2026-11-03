@@ -1,0 +1,72 @@
+/* Design tokens. One accent (--tint), reserved for things you can act on.
+   Scale and semantics follow Apple's HIG as translated for the web. */
+:root {
+  color-scheme: light dark;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "HarmonyOS Sans SC",
+    "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  --tint: #0a62d6;
+  --tint-ink: #ffffff;
+  --tint-weak: color-mix(in srgb, var(--tint) 11%, transparent);
+
+  --label: #1d1d1f;
+  --label-2: rgba(60, 60, 67, 0.72);
+  --label-3: rgba(60, 60, 67, 0.5);
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --surface-2: #fafafc;
+  --sep: rgba(60, 60, 67, 0.13);
+  --fill: rgba(120, 120, 128, 0.12);
+  --fill-2: rgba(120, 120, 128, 0.18);
+
+  --green: #1f8a3d;
+  --orange: #b25e00;
+  --red: #d1262b;
+  --purple: #7344c4;
+  --green-weak: color-mix(in srgb, var(--green) 12%, transparent);
+  --orange-weak: color-mix(in srgb, var(--orange) 13%, transparent);
+  --red-weak: color-mix(in srgb, var(--red) 11%, transparent);
+  --purple-weak: color-mix(in srgb, var(--purple) 12%, transparent);
+
+  --r-card: 16px;
+  --r-ctl: 10px;
+  --r-pill: 999px;
+  --shadow-card: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.04);
+  --shadow-pop: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 8px 30px rgba(0, 0, 0, 0.16);
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-1: 140ms;
+  --dur-2: 260ms;
+
+  --sider-w: 248px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tint: #4c9bff;
+    --tint-ink: #04152e;
+    --label: #f5f5f7;
+    --label-2: rgba(235, 235, 245, 0.66);
+    --label-3: rgba(235, 235, 245, 0.42);
+    --bg: #0f0f11;
+    --surface: #1c1c1e;
+    --surface-2: #232326;
+    --sep: rgba(84, 84, 88, 0.55);
+    --fill: rgba(120, 120, 128, 0.26);
+    --fill-2: rgba(120, 120, 128, 0.36);
+    --green: #32d74b;
+    --orange: #ff9f0a;
+    --red: #ff6961;
+    --purple: #bf8cff;
+    --shadow-card: 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+    --shadow-pop: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 8px 30px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root { --label-2: rgba(0, 0, 0, 0.85); --label-3: rgba(0, 0, 0, 0.7); --sep: rgba(0, 0, 0, 0.4); }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root { --label-2: rgba(255, 255, 255, 0.9); --label-3: rgba(255, 255, 255, 0.78); --sep: rgba(255, 255, 255, 0.5); }
+}

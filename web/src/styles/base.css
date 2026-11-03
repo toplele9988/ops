@@ -1,0 +1,29 @@
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: var(--font); font-size: 15px; line-height: 1.47; letter-spacing: -0.01em;
+  background: var(--bg); color: var(--label); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+h1, h2, h3, p { margin: 0; text-wrap: pretty; }
+h1, h2, h3 { text-wrap: balance; }
+button, input, select, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--tint); text-decoration: none; }
+a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; border-radius: 6px; }
+::placeholder { color: var(--label-3); }
+.num { font-variant-numeric: tabular-nums; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Type scale (px ≈ pt). Dense app surface: body 15, footnote 13. */
+.t-large { font-size: 32px; line-height: 38px; font-weight: 600; letter-spacing: -0.022em; }
+.t-title { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.t-headline { font-size: 17px; line-height: 22px; font-weight: 600; letter-spacing: -0.02em; }
+.t-body { font-size: 15px; line-height: 22px; }
+.t-sub { font-size: 14px; line-height: 20px; color: var(--label-2); }
+.t-foot { font-size: 13px; line-height: 18px; color: var(--label-2); }
+.t-cap { font-size: 12px; line-height: 16px; color: var(--label-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

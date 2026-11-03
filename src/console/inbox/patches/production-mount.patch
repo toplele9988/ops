@@ -1,0 +1,556 @@
+--- a/console/v3_inbox_api.py
++++ b/console/v3_inbox_api.py
+@@ -5,6 +5,8 @@
+ """
+ from pathlib import Path
+ import re
++import hashlib
++import json
+ import time
+ 
+ from starlette.concurrency import run_in_threadpool
+@@ -22,12 +24,16 @@
+ from .kb import Hub, default_hub
+ from .kb.drafting import draft_context
+ from .classify import Policy, PolicyInbox
++from .inbox.workflow import Workflow, version
++from .customers import aggregate_customers
++from .archive.store import ARCHIVE_PATH
++from .archive import validation as v
+ 
+ 
+ def build(app_module, inbound_path=INBOUND_PATH, drafts_path=DRAFTS_PATH, runner=None, *,
+           inbox=None, wechat_path=None, whatsapp_config_path=None, fetch=None, clock=None,
+           include_roles=('customer', 'supplier', 'unclassified'), stat_fn=None, group_gid=None,
+-          outbox=None, outbox_path=None, bridge=None, hub=None, knowledge_timeout=3, classify_path=None):
++          outbox=None, outbox_path=None, bridge=None, hub=None, knowledge_timeout=3, classify_path=None, archive_path=None):
+     cache = inbox if inbox is not None else build_inbox(inbound_path, wechat_path=wechat_path,
+         whatsapp_config_path=whatsapp_config_path, fetch=fetch, clock=clock, include_roles=include_roles,
+         stat_fn=stat_fn, group_gid=group_gid)
+@@ -54,19 +60,53 @@
+     send_service = outbox if outbox is not None else Outbox(outbox_path,
+         bridge=bridge if bridge is not None else BridgeClient(bridge_config, stat_fn=stat_fn, group_gid=group_gid))
+ 
++    workflow = Workflow(cache, outbox_path, archive_path or (root / "archive.sqlite3" if local else ARCHIVE_PATH), clock)
++
+     def summary(_):
+         result = cache.summary(time.time())
+         _, new = drafts.read_drafts(draft_path)
++        snapshot = cache.read()
++        states = workflow.states()
++        customers = aggregate_customers(snapshot['conversations'].values())
++        projected = [(c, workflow.project(c, states, customers)) for c in snapshot['conversations'].values()]
++        result['waiting_total'] = sum(p['workflow_state'] == 'waiting' for c, p in projected
++                                      if c['counterpart_role'] != 'supplier')
++        for channel in result.get('by_channel', []):
++            channel['waiting'] = sum(p['workflow_state'] == 'waiting' for c, p in projected
++                                     if c['channel'] == channel['channel'] and c['counterpart_role'] != 'supplier')
++        result['revision'] = hashlib.sha256(json.dumps(sorted((c['key'], version(c)) for c, p in projected)).encode()).hexdigest()
++        result['conversation_count'] = len(projected)
+         return dict(result, draft_new=new), 200
+ 
+     def conversations(values):
+         snapshot = cache.read()
+         latest, _ = drafts.read_drafts(draft_path)
+         now = time.time()
+-        rows = [c for c in snapshot['conversations'].values()
+-                if matches(c, values, c['messages'][-1]['text'])]
+-        rows.sort(key=lambda c: (not c['waiting_reply'], -c['last_seen'], c['key']))
+-        return paginate([conversation_item(c, now, latest) for c in rows], values, snapshot['ready']), 200
++        states = workflow.states()
++        state = values.pop('workflow_state', values['state'])
++        values['state'] = 'all'
++        rows = []
++        customers = aggregate_customers(snapshot['conversations'].values())
++        for conv in snapshot['conversations'].values():
++            projected = workflow.project(conv, states, customers)
++            if state != 'all' and projected['workflow_state'] != state:
++                continue
++            search = ' '.join(m['text'] for m in conv['messages']) + ' ' + (projected['customer_name'] or '')
++            if matches(conv, values, search):
++                rows.append(dict(conversation_item(conv, now, latest), **projected))
++        rows.sort(key=lambda c: (c['workflow_state'] != 'waiting', -c['last']['sent_at'], c['key']))
++        return paginate(rows, values, snapshot['ready']), 200
++
++    def list_parameters(request):
++        state = request.query_params.get('state', 'all')
++        from starlette.datastructures import QueryParams
++        from .inbox.model import single
++        single(request.query_params, 'state', 'all')
++        pairs = request.query_params.multi_items() if hasattr(request.query_params, 'multi_items') else request.query_params.items()
++        params = QueryParams([(k, 'all' if k == 'state' and v == 'done' else v) for k, v in pairs])
++        values = parameters(params)
++        values['workflow_state'] = state
++        return values
+ 
+     def key_parameter(request):
+         key = request.path_params.get('key', '')
+@@ -88,15 +128,18 @@
+         conversation.update(can_send=can_send, copy_hint='请核对收件人与内容，确认后从后台发送' if can_send else
+                             send_state['reason'] + '；' + copy_hint)
+         return dict(conversation=conversation, send_state=send_state,
+-                    messages=[dict(role=m['role'], text=m['text'][:4000], sent_at=m['sent_at'], sender_label=m.get('sender_label'), blocks=m.get('blocks'))
+-                              for m in conv['messages'][-300:]], draft=latest.get(key)), 200
+-
+-    def generate(key):
++                    messages=[dict(role=m['role'], text=m['text'], sent_at=m['sent_at'], sender_label=m.get('sender_label'), blocks=m.get('blocks'))
++                              for m in conv['messages']], draft=latest.get(key)), 200
++
++    def generate(key, request_id=None):
+         conv = cache.detail(key)
+         if conv is None:
+             return {'error': '未找到会话'}, 404
+         if not conv['draft_eligible']:
+             return {'error': '这个会话已标记为忽略或内部；如需起草，请先到待分类页面撤销标记'}, 409
++        existing = drafts.find_request(draft_path, key, request_id)
++        if existing:
++            return {'draft': existing}, 200
+         retry = drafts.LIMITER.reserve(key, time.monotonic())
+         if retry:
+             return {'error': '刚刚生成过，请稍后再试', 'retry_after': retry}, 429
+@@ -117,7 +160,7 @@
+             # Local persistence only; there is no send adapter or send operation.
+             if not policy.flags(key)['draft_eligible']:
+                 return {'error': '起草期间这个会话被标记为忽略或内部，结果未保存；请先核对分类'}, 409
+-            return {'draft': drafts.save_draft(draft_path, key, draft, time.time())}, 200
++            return {'draft': drafts.save_draft(draft_path, key, draft, time.time(), request_id)}, 200
+         finally:
+             drafts.LIMITER.finish(key)
+ 
+@@ -126,9 +169,10 @@
+             return forbidden(app_module, request)
+         try:
+             key = key_parameter(request)
+-            await form_fields(request)  # optional form; prefer middleware's cached body
+-            payload, code = await run_in_threadpool(generate, key)
+-        except BadRequest as error:
++            fields = await form_fields(request)
++            request_id = workflow.request_id(fields) if 'request_id' in fields else None
++            payload, code = await run_in_threadpool(generate, key, request_id)
++        except (BadRequest, v.BadRequest) as error:
+             payload, code = {'error': str(error)}, 400
+         except Exception:
+             payload, code = {'error': '草稿暂时无法保存'}, 503
+@@ -149,17 +193,43 @@
+                 raise BadRequest('草稿状态须为 used 或 discarded')
+             result = await run_in_threadpool(drafts.set_status, draft_path, int(raw_id), fields['status'])
+             payload, code = ({'draft': result}, 200) if result else ({'error': '未找到草稿'}, 404)
+-        except BadRequest as error:
++        except (BadRequest, v.BadRequest) as error:
+             payload, code = {'error': str(error)}, 400
+         except Exception:
+             payload, code = {'error': '草稿状态暂时无法保存'}, 503
+         return response(payload, code)
+ 
++    async def operate(request):
++        if not authorised(request) or not await recheck(request):
++            return forbidden(app_module, request)
++        try:
++            key = key_parameter(request)
++            fields = await form_fields(request)
++            if not await recheck(request):
++                return forbidden(app_module, request)
++            call = workflow.supplier_draft if request.url.path.endswith('/supplier-draft') else workflow.action
++            payload = await run_in_threadpool(call, key, fields, request.state.password_principal.username)
++            code = 200
++        except (BadRequest, v.BadRequest, v.Missing, v.Conflict) as error:
++            payload, code = {'error': str(error)}, 404 if isinstance(error, v.Missing) else 409 if isinstance(error, v.Conflict) else 400
++        except Exception:
++            payload, code = {'error': '操作结果未能确认，请刷新记录并人工核对；不会自动重发'}, 503
++        return response(payload, code)
++
++    def context(key):
++        try:
++            return workflow.context(key), 200
++        except v.Missing as error:
++            return {'error': str(error)}, 404
++
+     def get(parse, read):
+         return get_handler(app_module, parse, read, '收件箱暂时无法读取')
+ 
+-    return [Route('/api/v1/inbox/summary', get(lambda r: None, summary), methods=['GET'], name='inbox_summary'),
+-            Route('/api/v1/inbox/conversations', get(lambda r: parameters(r.query_params), conversations),
++    return [Route('/api/v1/inbox/conversations/{key}/ops/context', get(key_parameter, context), methods=['GET'], name='inbox_ops_context'),
++            Route('/api/v1/inbox/conversations/{key}/ops/action', operate, methods=['POST'], name='inbox_ops_action'),
++            Route('/api/v1/inbox/conversations/{key}/ops/supplier-draft', operate, methods=['POST'], name='inbox_ops_supplier_draft'),
++            Route('/api/v1/inbox/summary', get(lambda r: None, summary), methods=['GET'], name='inbox_summary'),
++            Route('/api/v1/inbox/conversations', get(list_parameters, conversations),
+                   methods=['GET'], name='inbox_conversations'),
+             Route('/api/v1/inbox/conversations/{key}', get(key_parameter, detail), methods=['GET'], name='inbox_detail'),
+             Route('/api/v1/inbox/conversations/{key}/draft', generate_draft, methods=['POST'], name='inbox_draft'),
+--- a/console/inbox/drafts.py
++++ b/console/inbox/drafts.py
+@@ -43,7 +43,17 @@
+     return latest, count
+ 
+ 
+-def save_draft(path, key, draft, now):
++def ensure_schema(db):
++    db.execute(_SCHEMA)
++    if 'sources_json' not in {row[1] for row in db.execute('PRAGMA table_info(drafts)')}:
++        db.execute("ALTER TABLE drafts ADD COLUMN sources_json TEXT DEFAULT '[]'")
++    columns = {row[1] for row in db.execute('PRAGMA table_info(drafts)')}
++    if 'request_id' not in columns:
++        db.execute('ALTER TABLE drafts ADD COLUMN request_id TEXT')
++    db.execute('CREATE UNIQUE INDEX IF NOT EXISTS drafts_request ON drafts(request_id) WHERE request_id IS NOT NULL')
++
++
++def save_draft(path, key, draft, now, request_id=None):
+     path = Path(path)
+     # umask is process-wide: serialize and keep its window as short as possible.
+     with _WRITE_LOCK:
+@@ -62,14 +72,23 @@
+         with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True)) as db:
+             db.execute('PRAGMA journal_mode=WAL')
+             with db:
+-                db.execute(_SCHEMA)
+-                if 'sources_json' not in {row[1] for row in db.execute('PRAGMA table_info(drafts)')}:
+-                    db.execute("ALTER TABLE drafts ADD COLUMN sources_json TEXT DEFAULT '[]'")
++                db.execute('BEGIN IMMEDIATE')
++                ensure_schema(db)
++                if request_id:
++                    old = db.execute('SELECT id,conversation_key,created_at,model,language,text,needs_json,status,sources_json '
++                                     'FROM drafts WHERE request_id=?', (request_id,)).fetchone()
++                    if old:
++                        if old[1] != key:
++                            from .model import BadRequest
++                            raise BadRequest('起草请求已用于其他会话')
++                        return _public(old, status=True)
+                 cursor = db.execute('INSERT INTO drafts '
+                     '(conversation_key, created_at, model, language, text, needs_json, sources_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                     (key, now, draft['model'], draft['language'], draft['text'],
+                      json.dumps(draft['needs_confirmation'], ensure_ascii=False),
+                      json.dumps(draft.get('sources', []), ensure_ascii=False)))
++                if request_id:
++                    db.execute('UPDATE drafts SET request_id=? WHERE id=?', (request_id, cursor.lastrowid))
+                 result = dict(draft, sources=draft.get('sources', []), id=cursor.lastrowid, created_at=now)
+     return result
+ 
+@@ -115,3 +134,32 @@
+ 
+ 
+ LIMITER = DraftLimiter()
++
++
++def find_request(path, key, request_id):
++    if not request_id or not Path(path).exists():
++        return None
++    with read_database(path) as db:
++        if 'request_id' not in {r[1] for r in db.execute('PRAGMA table_info(drafts)')}:
++            return None
++        row = db.execute('SELECT id,conversation_key,created_at,model,language,text,needs_json,status,sources_json '
++                         'FROM drafts WHERE request_id=?', (request_id,)).fetchone()
++        if row and row[1] != key:
++            from .model import BadRequest
++            raise BadRequest('起草请求已用于其他会话')
++        return _public(row, status=True) if row else None
++
++
++def initialize(path):
++    """Explicit additive migration, without generating a draft or contacting AI."""
++    path = Path(path)
++    with _WRITE_LOCK:
++        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
++        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
++        try:
++            os.fchmod(fd, 0o600)
++        finally:
++            os.close(fd)
++        with closing(sqlite3.connect(path)) as db, db:
++            db.execute('BEGIN IMMEDIATE')
++            ensure_schema(db)
+--- /dev/null
++++ b/console/inbox/workflow.py
+@@ -0,0 +1,215 @@
++"""W2 operating state, customer/deal links and draft-only supplier questions.
++
++State and action receipts share the archive transaction with Deals. Source channel
++messages are read-only. DryRun writes a separate, unsendable outbox table.
++"""
++from datetime import datetime, timezone
++import hashlib
++import json
++import re
++import time
++
++from console.archive.store import Store, ARCHIVE_PATH, insert
++from console.archive import validation as v
++from console.customers import aggregate_customers, public_customer
++from console.deals.service import Deals
++from console.deals import validation as dv
++from console.inbox.model import make_key
++from console.outbox.dry_run import DryRun
++
++SCHEMA = (
++    '''CREATE TABLE IF NOT EXISTS inbox_workflow (
++     conversation_key TEXT PRIMARY KEY, customer_key TEXT, status TEXT,
++     remind_at REAL, message_version TEXT, updated_at REAL NOT NULL)''',
++    '''CREATE TABLE IF NOT EXISTS inbox_action_receipts (
++     request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL)''',
++)
++
++
++def version(conv):
++    last = conv['messages'][-1] if conv['messages'] else {}
++    # List and detail adapters can expose different history lengths. Use source
++    # last_seen and the last message, not the lazily loaded history count.
++    return hashlib.sha256(json.dumps([conv['last_seen'], last.get('text'), last.get('role')],
++                                     ensure_ascii=False).encode()).hexdigest()
++
++
++def text(fields, name, limit=4000, required=True):
++    return v.text(fields.get(name, ''), limit, required)
++
++
++class Workflow:
++    def __init__(self, inbox, outbox_path, archive_path=ARCHIVE_PATH, clock=None):
++        self.inbox = inbox
++        self.clock = clock or time.time
++        self.store = Store(archive_path)
++        self.deals = Deals(store=self.store, inbox=inbox, clock=self.clock)
++        self.outbox = DryRun(outbox_path, self.clock)
++
++    def states(self):
++        with self.store.read() as db:
++            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='inbox_workflow'").fetchone():
++                return {}
++            return {r['conversation_key']: dict(r) for r in db.execute('SELECT * FROM inbox_workflow')}
++
++    def project(self, conv, states=None, customers=None):
++        state = (self.states() if states is None else states).get(conv['key'], {})
++        fresh = state.get('message_version') == version(conv)
++        remind = state.get('remind_at') if fresh else None
++        done = fresh and state.get('status') == 'done'
++        due = remind is not None and remind <= self.clock()
++        status = 'done' if done else 'replied' if remind and not due else 'waiting' if due or conv['waiting_reply'] else 'replied'
++        customer_key = state.get('customer_key') or make_key('customer', conv['channel'], conv['account'], conv['buyer_name'])
++        if customers is None:
++            customers = aggregate_customers(self.inbox.read()['conversations'].values())
++        customer = customers.get(customer_key)
++        return dict(workflow_state=status, remind_at=remind, reminder_due=due,
++                    customer_key=customer_key if customer else None,
++                    customer_name=customer['buyer_name'] if customer else None)
++
++    def context(self, key):
++        conv = self.require(key)
++        source = self.inbox.read()['conversations'].get(key, conv)
++        p = self.project(source)
++        customers = aggregate_customers(self.inbox.read()['conversations'].values())
++        customer = customers.get(p['customer_key'])
++        linked = self.deals.read('by_conversation', {'key': key})
++        suppliers = [dict(key=c['key'], buyer_name=c['buyer_name'], channel_label=c['channel_label'])
++                     for c in self.inbox.read()['conversations'].values()
++                     if c['counterpart_role'] == 'supplier' and c.get('draft_eligible', True)]
++        return dict(**p, customer=public_customer(customer, detail=True) if customer else None,
++                    deals=linked['deals'], party=linked['party'], suppliers=suppliers,
++                    outbox=self.outbox.recent(key), dry_run=True)
++
++    def require(self, key):
++        conv = self.inbox.detail(key)
++        if conv is None:
++            raise v.Missing('未找到会话')
++        return conv
++
++    def supplier_draft(self, key, fields, who):
++        v.whitelist(fields, ('request_id', 'supplier_key', 'product'))
++        conv = self.require(key)
++        if not conv.get('draft_eligible', True):
++            raise v.Conflict('这个会话暂不能起草，请先核对会话分类')
++        supplier = self.require(text(fields, 'supplier_key', 8192))
++        if supplier['counterpart_role'] != 'supplier' or not supplier.get('draft_eligible', True):
++            raise v.BadRequest('请选择可沟通的供应商会话')
++        question = next((m['text'] for m in reversed(conv['messages']) if m['role'] == 'buyer' and m['text'].strip()), '')
++        if not question:
++            raise v.BadRequest('会话中没有客户问题，请先核对消息')
++        linked = self.deals.read('by_conversation', {'key': key})
++        products = []
++        for deal in linked['deals']:
++            products.extend(i['name'] for i in self.deals.read('detail', row_id=deal['id'])['items'])
++        extra = text(fields, 'product', 500, False)
++        if extra:
++            products.append(extra)
++        if not products:
++            raise v.BadRequest('请补充产品名称，或先在关联案子中添加产品')
++        # Only the selected customer's question and product names are transferred.
++        # Do not copy internal prices, other buyer histories or full deal notes.
++        body = '请协助核实以下产品和问题：\n产品：' + '、'.join(dict.fromkeys(products)) + '\n客户问题：' + question + '\n请提供可确认的规格和交期，未确认的事项请注明。'
++        row = self.outbox.save(supplier['key'], supplier['channel'], key, body,
++                               self.request_id(fields), who, 'draft')
++        return dict(message=row, recipient=supplier['buyer_name'], notice='已起草到供应商会话，核对后再确认发送（演练）')
++
++    @staticmethod
++    def request_id(fields):
++        value = fields.get('request_id', '')
++        if not re.fullmatch(r'[A-Za-z0-9_-]{8,100}', value):
++            raise v.BadRequest('请刷新后重新操作')
++        return value
++
++    def action(self, key, fields, who):
++        v.whitelist(fields, ('action', 'request_id', 'text', 'confirm', 'dry_run', 'customer_key',
++                             'title', 'deal_id', 'remind_at', 'supplier_key', 'draft_id'))
++        request_id = self.request_id(fields)
++        conv = self.require(key)
++        action = fields.get('action')
++        if action in ('send', 'supplier_send'):
++            if fields.get('dry_run') != '1' or fields.get('confirm') != '1':
++                raise v.BadRequest('请人工确认演练草稿；本入口不能外发')
++            if not conv.get('draft_eligible', True):
++                raise v.Conflict('这个会话暂不能起草，请先核对会话分类')
++            body = text(fields, 'text')
++            if '【待确认' in body:
++                raise v.BadRequest('请先核对并修改待确认内容')
++            target = conv
++            if action == 'supplier_send':
++                target = self.require(text(fields, 'supplier_key', 8192))
++                if target['counterpart_role'] != 'supplier' or not target.get('draft_eligible', True):
++                    raise v.BadRequest('请选择可沟通的供应商会话')
++                draft_id = dv.identity(fields.get('draft_id', ''))
++                if not any(r['id'] == draft_id and r['source_key'] == key and
++                           r['conversation_key'] == target['key'] and r['state'] == 'draft'
++                           for r in self.outbox.recent(key)):
++                    raise v.BadRequest('请先为这个供应商起草询问')
++            row = self.outbox.save(target['key'], target['channel'], key, body, request_id, who)
++            return dict(message=row, notice='已进入发送队列（演练）')
++        fingerprint = hashlib.sha256(json.dumps([key, fields], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
++        stamp = datetime.fromtimestamp(self.clock(), timezone.utc).isoformat()
++        with self.store.write() as db:
++            for statement in SCHEMA:
++                db.execute(statement)
++            old = db.execute('SELECT * FROM inbox_action_receipts WHERE request_id=?', (request_id,)).fetchone()
++            if old:
++                if old['fingerprint'] != fingerprint:
++                    raise v.Conflict('这次操作已保存，请核对后再操作')
++                return json.loads(old['result_json'])
++            db.execute('INSERT INTO inbox_workflow(conversation_key,updated_at) VALUES(?,?) '
++                       'ON CONFLICT DO NOTHING', (key, self.clock()))
++            result = dict(ok=True)
++            if action in ('done', 'reopen', 'remind'):
++                remind = None
++                if action == 'remind':
++                    try:
++                        raw = datetime.fromisoformat(fields.get('remind_at', '').replace('Z', '+00:00'))
++                        if raw.utcoffset() is None:
++                            raise ValueError
++                        remind = raw.timestamp()
++                        if not self.clock() < remind <= self.clock() + 366 * 86400:
++                            raise ValueError
++                    except (ValueError, OverflowError):
++                        raise v.BadRequest('请选择未来一年内的提醒时间') from None
++                db.execute('UPDATE inbox_workflow SET status=?,remind_at=?,message_version=?,updated_at=? '
++                           'WHERE conversation_key=?', ('done' if action == 'done' else None, remind,
++                                                         version(self.inbox.read()['conversations'].get(key, conv)), self.clock(), key))
++                result['notice'] = {'done': '已标记已处理，新消息到达会再次提醒',
++                                    'reopen': '已恢复跟进', 'remind': '提醒已记下，到时会回到要我回复'}[action]
++            elif action == 'assign':
++                customers = aggregate_customers(self.inbox.read()['conversations'].values())
++                customer = customers.get(fields.get('customer_key'))
++                if not customer:
++                    raise v.BadRequest('请选择客户列表中的客户')
++                old_party = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone()
++                party = db.execute("SELECT id FROM parties WHERE kind='customer' AND name=?", (customer['buyer_name'],)).fetchone()
++                party_id = party['id'] if party else insert(db, 'parties', dict(kind='customer', name=customer['buyer_name'],
++                    short_name=customer['buyer_name'], country=customer['country'], created_at=stamp, updated_at=stamp), who)
++                if old_party and old_party['party_id'] != party_id and fields.get('confirm') != '1':
++                    raise v.Conflict('更换归属会同步更新案子内会话归属，请确认后保存')
++                self.deals._identity(db, key, party_id, who, stamp, fields.get('confirm') == '1')
++                db.execute('UPDATE inbox_workflow SET customer_key=?,updated_at=? WHERE conversation_key=?',
++                           (customer['key'], self.clock(), key))
++                result['notice'] = '会话已归到' + customer['buyer_name']
++            elif action == 'create_deal':
++                # Repeated intent, including a refreshed browser, must not create
++                # multiple open deals from the same source conversation.
++                existing = db.execute("SELECT id FROM deals WHERE source_conversation_key=? AND status='open' ORDER BY id LIMIT 1", (key,)).fetchone()
++                if existing:
++                    result['id'] = existing['id']
++                else:
++                    values = dv.fields('create', dict(conversation_key=key, party_kind='supplier' if conv['counterpart_role'] == 'supplier' else 'customer',
++                        party_name=conv['buyer_name'], title=text(fields, 'title', 500, False) or conv['buyer_name'] + '的询盘'))
++                    result.update(self.deals._write(db, 'create', None, values, who, stamp, None))
++                result['notice'] = '案子已建好，会话已关联'
++            elif action == 'link_deal':
++                deal_id = dv.identity(fields.get('deal_id', ''))
++                values = dv.fields('conversation', dict(conversation_key=key))
++                result.update(self.deals._write(db, 'conversation', deal_id, values, who, stamp, None))
++                result['notice'] = '会话已关联到案子'
++            else:
++                raise v.BadRequest('请选择有效操作')
++            db.execute('INSERT INTO inbox_action_receipts VALUES(?,?,?)',
++                       (request_id, fingerprint, json.dumps(result, ensure_ascii=False)))
++        return result
+--- /dev/null
++++ b/console/inbox/migrate.py
+@@ -0,0 +1,25 @@
++"""Explicit additive W2 migration. Paths are required; no production defaults."""
++import argparse
++from pathlib import Path
++from console.archive.store import Store
++from console.inbox.workflow import SCHEMA
++from console.inbox import drafts
++from console.outbox.dry_run import DryRun, SCHEMA as OUTBOX_SCHEMA
++
++
++def migrate(archive_path, outbox_path, drafts_path):
++    with Store(archive_path).write() as db:
++        for statement in SCHEMA:
++            db.execute(statement)
++    with DryRun(outbox_path).store._write() as db:
++        db.execute(OUTBOX_SCHEMA)
++    drafts.initialize(drafts_path)
++
++
++if __name__ == '__main__':
++    parser = argparse.ArgumentParser(description='收件箱 W2 增量建表，不发送消息')
++    for name in ('archive', 'outbox', 'drafts'):
++        parser.add_argument('--' + name, type=Path, required=True)
++    args = parser.parse_args()
++    migrate(args.archive, args.outbox, args.drafts)
++    print('W2 migration complete; no drafts generated or messages sent')
+--- /dev/null
++++ b/console/outbox/dry_run.py
+@@ -0,0 +1,46 @@
++"""Rehearsal drafts in the outbox database. No bridge is invoked; live senders cannot consume these rows."""
++import json
++import time
++from console.archive.validation import Conflict
++from .store import Store, sha
++
++SCHEMA = '''CREATE TABLE IF NOT EXISTS inbox_dry_run_drafts (
++ id INTEGER PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, fingerprint TEXT NOT NULL,
++ conversation_key TEXT NOT NULL, source_key TEXT NOT NULL, channel TEXT NOT NULL,
++ text TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('draft','queued')),
++ dry_run INTEGER NOT NULL DEFAULT 1 CHECK(dry_run=1), created_at REAL NOT NULL,
++ created_by TEXT NOT NULL)'''
++
++
++class DryRun:
++    def __init__(self, path, clock=None):
++        self.store = Store(path)
++        self.clock = clock or time.time
++
++    def save(self, key, channel, source, text, request_id, who, state='queued'):
++        fingerprint = sha(json.dumps([key, channel, source, text, state], ensure_ascii=False))
++        with self.store._write() as db:
++            db.execute(SCHEMA)
++            old = db.execute('SELECT * FROM inbox_dry_run_drafts WHERE request_id=?', (request_id,)).fetchone()
++            if old:
++                if old['fingerprint'] != fingerprint:
++                    raise Conflict('这次操作已保存，请核对记录后再发起新操作')
++                return dict(old)
++            row_id = db.execute('INSERT INTO inbox_dry_run_drafts '
++                '(request_id,fingerprint,conversation_key,source_key,channel,text,state,created_at,created_by) '
++                'VALUES(?,?,?,?,?,?,?,?,?)',
++                (request_id, fingerprint, key, source, channel, text, state, self.clock(), who)).lastrowid
++            self.store._audit(db, self.clock(), 'inbox_dry_run_' + state, key, request_id, dry_run=True)
++            return dict(db.execute('SELECT * FROM inbox_dry_run_drafts WHERE id=?', (row_id,)).fetchone())
++
++    def recent(self, key):
++        if not self.store.path.exists():
++            return []
++        from console.inbox.store import read_database
++        import sqlite3
++        with read_database(self.store.path) as db:
++            db.row_factory = sqlite3.Row
++            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='inbox_dry_run_drafts'").fetchone():
++                return []
++            return [dict(r) for r in db.execute('SELECT * FROM inbox_dry_run_drafts '
++                'WHERE conversation_key=? OR source_key=? ORDER BY id DESC LIMIT 50', (key, key))]

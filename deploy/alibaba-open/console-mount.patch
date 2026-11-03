@@ -1,0 +1,11 @@
+--- a/console/v3.py
++++ b/console/v3.py
+@@ -57,6 +57,8 @@
+     from . import v3_lang_api, v3_pipeline_api
+     routes += v3_lang_api.build(app_module)
+     routes += v3_pipeline_api.build(app_module)
++    from . import v3_alibaba_open_api
++    routes += v3_alibaba_open_api.build(app_module, network_enabled=False)
+     from . import v3_deal_workflow_api
+     routes += v3_deal_workflow_api.build(app_module)
+     routes += v3_app.build(app_module)

@@ -1,0 +1,11 @@
+--- a/scripts/rehearsal_server.py
++++ b/scripts/rehearsal_server.py
+@@ -54,6 +54,8 @@
+     routes += v3_deal_workflow_api.build(gate, archive, runner=None)
+     from console import v3_alibaba_open_api
+     routes += v3_alibaba_open_api.build(gate, archive, credentials_path=tmp + '/alibaba-open-unconfigured.json')
++    from console import v3_classify_api
++    routes += v3_classify_api.build(gate, path=tmp + '/classify.sqlite3', archive_path=archive)
+     for name in ('v3_quotes_api', 'v3_roles_api', 'v3_whatsapp_login_api', 'v3_directory_api', 'v3_audit_api', 'v3_extract_api', 'v3_fulfil_api', 'v3_icbu_api', 'v3_listing_api', 'v3_lang_api', 'v3_pipeline_api'):
+         # Modules added by later batches join the rehearsal automatically.
+         try:

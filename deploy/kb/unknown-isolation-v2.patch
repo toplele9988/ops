@@ -1,0 +1,73 @@
+--- a/video_knowledge/kb_unknown_isolation.py
++++ b/video_knowledge/kb_unknown_isolation.py
+@@ -1,4 +1,4 @@
+-"""Two independently pinned unknown outcomes; no writes and no network I/O."""
++"""Three independently pinned unknown outcomes; no writes and no network I/O."""
+ from __future__ import annotations
+ import hashlib,json,os,re,sqlite3,stat
+ from pathlib import Path
+@@ -16,8 +16,9 @@
+     models=ledger['models']
+     uncertain={name:record for name,record in models.items() if record.get('blocked_reason')=='usage_uncertain'}
+     rows=db.execute("SELECT * FROM calls WHERE state IN ('hold','provider_started')").fetchall()
+-    scopes=db.execute("SELECT value FROM scope WHERE key='hold'").fetchall()
+-    _need(len(uncertain)==len(rows)==2 and len(scopes)==1 and scopes[0][0]=='api_timeout')
++    scopes=db.execute("SELECT key,value FROM scope ORDER BY key").fetchall()
++    _need(len(uncertain)==len(rows)==3 and [tuple(row) for row in scopes]==[('hold','api_timeout')])
++    _need(not any(record.get('in_flight') is True for record in models.values()))
+     result=[]
+     for raw in rows:
+         row=tuple(raw)
+@@ -29,11 +30,11 @@
+         record=uncertain[model]
+         _need(record.get('in_flight') is False and record.get('unknown_reserved_tokens')==reserved)
+         _need(type(record.get('accounted_tokens')) is int and record['accounted_tokens']>=matrix.quota_baseline[model])
+-        result.append({'model':model,'cache_key':key,'attempt':attempt,'prompt_sha256':prompt,
++        result.append({'state':'quarantine','error_code':'api_timeout','model':model,'cache_key':key,'attempt':attempt,'prompt_sha256':prompt,
+                        'reserved_tokens':reserved,'checkpoint_sha256':digest(row),'ledger_sha256':digest(record)})
+-    _need(len({x['model'] for x in result})==2 and len({x['prompt_sha256'] for x in result})==2)
++    _need(len({x['model'] for x in result})==3 and len({x['prompt_sha256'] for x in result})==3)
+     _need({x['model'] for x in result}==set(uncertain))
+-    return {'schema':'wechat-kb-two-unknown-v1','scope':'api_timeout','holds':sorted(result,key=lambda x:x['model'])}
++    return {'schema':'wechat-kb-unknown-v2','hold_count':3,'scope':'api_timeout','holds':sorted(result,key=lambda x:x['model'])}
+ 
+ def assess(db,ledger,matrix,manifest):
+     _need(isinstance(manifest,dict) and capture(db,ledger,matrix)==manifest)
+@@ -52,14 +53,14 @@
+     finally: db.close()
+ 
+ def confirm_units(held_prompts,prompt_hashes):
+-    _need(len(held_prompts)==2 and all(prompt_hashes.count(h)==1 for h in held_prompts))
++    _need(len(held_prompts)==3 and all(prompt_hashes.count(h)==1 for h in held_prompts))
+     return held_prompts
+ 
+ def confirm_live_units(held_prompts,prompt_hashes):
+     # A live tick covers only one chatroom; held windows may live elsewhere.
+     # Every matching prompt is still skipped and the frozen evidence is checked
+     # independently before and during each model call.
+-    _need(len(held_prompts)==2 and isinstance(prompt_hashes,(list,tuple)))
++    _need(len(held_prompts)==3 and isinstance(prompt_hashes,(list,tuple)))
+     return held_prompts
+ 
+ def allow_other_prompt(db,ledger,matrix,prompt_hash,manifest):
+--- a/video_knowledge/quota_isolation.py
++++ b/video_knowledge/quota_isolation.py
+@@ -1,12 +1,16 @@
+-"""Freeze exactly the two audited quota records in memory, never rewrite them."""
++"""Freeze exactly the three audited quota records in memory, never rewrite them."""
+ import copy
+ from . import kb_unknown_isolation as isolation
+ 
+ def install(matrix,manifest):
+     if getattr(matrix,'_kb_quarantine_installed',False): raise RuntimeError('qwen_matrix_unavailable')
+     initial=matrix._read(locked=False)
++    if (manifest.get('schema')!='wechat-kb-unknown-v2' or manifest.get('hold_count')!=3
++            or len(manifest.get('holds',[]))!=3
++            or any(x.get('state')!='quarantine' or x.get('error_code')!='api_timeout' for x in manifest['holds'])):
++        raise RuntimeError('qwen_matrix_unavailable')
+     expected={x['model']:x for x in manifest['holds']}
+-    if len(expected)!=2: raise RuntimeError('qwen_matrix_unavailable')
++    if len(expected)!=3: raise RuntimeError('qwen_matrix_unavailable')
+     frozen={name:copy.deepcopy(row) for name,row in initial['models'].items() if row.get('blocked_reason')=='usage_uncertain'}
+     if set(frozen)!=set(expected): raise RuntimeError('qwen_matrix_unavailable')
+     for name,record in frozen.items():

@@ -1,0 +1,76 @@
+--- a/video_knowledge/video_card_jobs.py
++++ b/video_knowledge/video_card_jobs.py
+@@ -121,6 +121,26 @@
+         raise ValueError('download_file_mismatch')
+     return status,size
+ 
++
++# Only fixed source/receipt codes can leave this worker. Raw parser/RPC errors
++# can contain transport data and must never become error_code or log text.
++_FAILURE_CODES = frozenset((
++    'assistant_person_unauthorized', 'card_source_missing', 'card_authority_changed',
++    'card_source_changed', 'download_identity_mismatch', 'download_status_invalid',
++    'download_files_ambiguous', 'download_file_mismatch', 'nas_source_ambiguous',
++    'catalog_schema_version_unsupported', 'video_annotation_unprivileged_required',
++    'video_annotation_catalog_not_private', 'video_annotation_catalog_changed',
++))
++
++
++def failure_code(error, phase):
++    value = str(error)
++    if value in _FAILURE_CODES:
++        return value
++    return {'source': 'source_validation_failed', 'poll': 'download_receipt_invalid',
++            'nas': 'nas_receipt_invalid', 'index': 'catalog_validation_failed'}[phase]
++
++
+ def tick(store,config,policy,*,rpc=call_tool,now=time.time):
+     if config.get('realtime_video_cards') is not True or not silent(config):return {'status':'disabled'}
+     initialize(store);stamp=now()
+@@ -129,21 +149,24 @@
+         if not job:return {'status':'idle'}
+         job=dict(job)
+         if job['state']=='queued':db.execute("UPDATE video_card_jobs SET state='submitting',updated_at=? WHERE job_id=?",(stamp,job['job_id']))
+-    state=job['state'];code=None;updates={}
++    state=job['state'];code=None;updates={};submission_attempted=False;phase='source'
+     try:
+         oid,nid=source(store,config,policy,job,stamp)
+         if state=='queued':
+             # Existing-action=error and a deterministic private filename prohibit
+             # overwrite. A crash after this call remains uncertain, never retried.
++            submission_attempted=True
+             result=document(rpc('download_wxchannels_video',{'oid':oid,'nid':nid,
+                 'download_dir':DOWNLOAD_DIR,'filename':job['filename'],'existing_action':'error'}))
+             updates['task_id']=task_id(result);state='downloading'
+         elif state=='downloading':
++            phase='poll'
+             doc=document(rpc('get_download_task_detail',{'id':job['task_id']}))
+             status,size=verify_detail(doc,job)
+             if status==5:state='downloaded';updates.update(source_bytes=size,downloaded_at=now(),receipt_filename=doc['files'][0]['name'])
+             elif status in (3,6,7):state='download_failed';code='download_paused_or_failed'
+         elif state=='downloaded':
++            phase='nas'
+             # Watcher validates MP4, mount, size and immutable archive SHA. The
+             # download receipt pins this exact filename and length to the oid.
+             with store.lock:
+@@ -152,6 +175,7 @@
+             if len(rows)>1:raise ValueError('nas_source_ambiguous')
+             if rows:updates['source_sha256']=rows[0][0];state='archive_verified'
+         else:
++            phase='index'
+             from retrieval.catalog_reader import CatalogReader
+             pairs=authority(config,policy,job['person'],now=stamp)
+             with CatalogReader(policy['catalog']) as reader:
+@@ -162,8 +186,10 @@
+                 if any(tuple(r) in pairs for r in rows):state='indexed';updates['indexed_at']=now()
+                 reader.unchanged()
+     except Exception as exc:
+-        if state=='queued':state='download_unknown';code='download_outcome_unknown'
+-        elif isinstance(exc,ValueError):state='blocked';code='source_or_receipt_invalid'
++        if state=='queued' and submission_attempted:
++            state='download_unknown';code='download_outcome_unknown'
++        elif state=='queued' or isinstance(exc,ValueError):
++            state='blocked';code=failure_code(exc,phase)
+         else:code='status_temporarily_unavailable'
+     updates.update(state=state,updated_at=now(),not_before=now()+(15 if state=='archive_verified' else 3),error_code=code)
+     with store.transaction() as db:

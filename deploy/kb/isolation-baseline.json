@@ -1,0 +1,7 @@
+{
+  "base": "/opt/imgw/wechat-kb-dual-live-v1",
+  "sha256": {
+    "video_knowledge/kb_unknown_isolation.py": "e2d5f4e3d7b8fd83b60a5a137d3a795e15551028cb4676b3ae6412793e5c1bb2",
+    "video_knowledge/quota_isolation.py": "27fc420444a491a57586e0d2cc0c744af5c4374746987253dac13d49d484f1b3"
+  }
+}
