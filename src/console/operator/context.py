@@ -83,6 +83,8 @@ class ArchiveContext:
             destinations = rows('deal_operation_context', 'deal_id=?', (deal['id'],)) if deal else []
             payments = rows('deal_payments', "deal_id=? AND status='confirmed' AND qualifies=1 AND kind!='refund'", (deal['id'],)) if deal else []
         histories = {ck: self.inbox.detail(ck, now) for ck in contacts}
+        if event.get('message_id') and event['kind'] == 'inbound' and hasattr(self.inbox, 'detail_at'):
+            histories[key] = self.inbox.detail_at(key, event['message_id'], now)
         for ck, contact in contacts.items():
             if not contact.get('language'):
                 language = self.language(ck) if self.language else None

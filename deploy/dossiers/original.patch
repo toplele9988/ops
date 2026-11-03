@@ -1,0 +1,606 @@
+--- /dev/null
++++ b/console/dossiers/__init__.py
+@@ -0,0 +1,4 @@
++"""Supplier dossiers: local read projections and unsent question drafts only."""
++from .service import Dossiers
++
++__all__ = ['Dossiers']
+--- /dev/null
++++ b/console/dossiers/drafts.py
+@@ -0,0 +1,79 @@
++"""Private, immutable supplier question snapshots. No outbox or send contract."""
++from datetime import datetime, timezone
++from contextlib import closing
++import hashlib
++import json
++import os
++from pathlib import Path
++import sqlite3
++
++from .store import ROOT, readonly
++from .service import Missing
++
++DDL = '''CREATE TABLE IF NOT EXISTS sd_question_draft(
++ draft_id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL,
++ basis_sha256 TEXT NOT NULL, gap_ids_json TEXT NOT NULL,
++ source_refs_json TEXT NOT NULL, gap_snapshot_json TEXT NOT NULL,
++ text TEXT NOT NULL, state TEXT NOT NULL CHECK(state='draft'),
++ created_at TEXT NOT NULL, created_by TEXT NOT NULL,
++ UNIQUE(supplier_id,basis_sha256)
++);'''
++
++
++def migrate(path=ROOT / 'drafts.sqlite3'):
++    path = Path(path)
++    if path.is_symlink():
++        raise ValueError('unsafe_draft_store')
++    old = os.umask(0o077)
++    try:
++        with closing(sqlite3.connect(path)) as db, db:
++            db.execute('BEGIN IMMEDIATE')
++            if db.execute('PRAGMA user_version').fetchone()[0] not in (0, 1):
++                raise ValueError('unsupported_draft_revision')
++            db.execute(DDL)
++            columns = [r[1] for r in db.execute('PRAGMA table_info(sd_question_draft)')]
++            if columns != ['draft_id','supplier_id','basis_sha256','gap_ids_json','source_refs_json','gap_snapshot_json','text','state','created_at','created_by']:
++                raise ValueError('incompatible_draft_schema')
++            db.execute('PRAGMA user_version=1')
++        path.chmod(0o600)
++    finally:
++        os.umask(old)
++
++
++class Drafts:
++    def __init__(self, service, path=ROOT / 'drafts.sqlite3'):
++        self.service, self.path = service, Path(path)
++
++    def list(self, supplier):
++        with readonly(self.path) as db:
++            rows = [dict(r) for r in db.execute('SELECT * FROM sd_question_draft WHERE supplier_id=? ORDER BY created_at DESC,draft_id LIMIT 30', (supplier,))]
++        return dict(items=rows)
++
++    def create(self, supplier, filters, username):
++        with readonly(self.service.path) as db:
++            self.service.check(db)
++            s = db.execute('SELECT name FROM sd_supplier WHERE supplier_id=?', (supplier,)).fetchone()
++            if not s:
++                raise Missing
++            gaps = self.service._gaps(db, dict(filters, supplier=supplier))
++            refs = sorted({ref for g in gaps for ref in g['source_refs']})
++            sources = [dict(db.execute('SELECT source_id,content_sha256,file_sha256 FROM sd_source WHERE source_id=?', (ref,)).fetchone()) for ref in refs]
++        if not gaps:
++            raise Missing
++        snapshot = json.dumps(dict(gaps=gaps, sources=sources), ensure_ascii=False, sort_keys=True, separators=(',', ':'))
++        basis = hashlib.sha256(snapshot.encode()).hexdigest()
++        # Duplicate questions collapse in the prose, while all gap identities remain in the snapshot.
++        asks = list(dict.fromkeys(g['ask_text'] for g in gaps))
++        text = '您好，想向贵司核对以下资料，请按项目逐项回复，并附对应型号、配置和资料版本：\n\n' + '\n'.join(f'{i}. {ask}' for i, ask in enumerate(asks, 1)) + '\n\n如涉及报价，请注明币种、税制、数量条件、交期和有效期。谢谢。'
++        row = dict(draft_id='sdq-' + basis, supplier_id=supplier, basis_sha256=basis,
++                   gap_ids_json=json.dumps([g['gap_id'] for g in gaps]), source_refs_json=json.dumps(sources),
++                   gap_snapshot_json=snapshot, text=text, state='draft',
++                   created_at=datetime.now(timezone.utc).isoformat(), created_by=username)
++        if self.path.is_symlink() or not self.path.is_file():
++            raise ValueError('draft_store_not_migrated')
++        with closing(sqlite3.connect(self.path, timeout=3)) as db, db:
++            db.row_factory = sqlite3.Row
++            db.execute('BEGIN IMMEDIATE')
++            db.execute('INSERT OR IGNORE INTO sd_question_draft (' + ','.join(row) + ') VALUES (' + ','.join('?' for _ in row) + ')', tuple(row.values()))
++            saved = dict(db.execute('SELECT * FROM sd_question_draft WHERE draft_id=?', (row['draft_id'],)).fetchone())
++        return saved
+--- /dev/null
++++ b/console/dossiers/service.py
+@@ -0,0 +1,198 @@
++"""Project dossier-v1's inspected sd_* schema. Amounts always remain strings."""
++import base64
++import json
++from urllib.parse import urlencode
++
++from .store import DB_PATH, readonly
++
++
++class Missing(Exception):
++    pass
++
++
++def unpack(row):
++    result = dict(row)
++    for key in tuple(result):
++        if key.endswith('_json'):
++            raw = result.pop(key)
++            result[key[:-5]] = json.loads(raw) if raw is not None else None
++    return result
++
++
++def family_key(value):
++    return base64.urlsafe_b64encode(value.encode()).decode().rstrip('=')
++
++
++def family_value(value):
++    try:
++        raw = base64.urlsafe_b64decode(value + '=' * (-len(value) % 4)).decode()
++        if family_key(raw) != value or not raw:
++            raise ValueError
++        return raw
++    except (ValueError, UnicodeError):
++        raise Missing from None
++
++
++class Dossiers:
++    def __init__(self, path=DB_PATH, *, resolver=None):
++        self.path = path
++        self.resolver = resolver
++
++    @staticmethod
++    def check(db):
++        row = db.execute("SELECT value FROM sd_metadata WHERE key='schema_revision'").fetchone()
++        if not row or row[0] != 'dossier-v1':
++            raise ValueError('unsupported_dossier')
++
++    def suppliers(self, params=None):
++        params = params or {}
++        with readonly(self.path) as db:
++            self.check(db)
++            rows = []
++            for row in db.execute('SELECT * FROM sd_supplier ORDER BY name,supplier_id'):
++                s = unpack(row)
++                if params.get('type') and s['supplier_type'] != params['type']:
++                    continue
++                if params.get('q') and params['q'].casefold() not in (s['name'] + json.dumps(s['categories'], ensure_ascii=False)).casefold():
++                    continue
++                sid = s['supplier_id']
++                stats = db.execute('SELECT count(DISTINCT p.product_family),count(*),'
++                    'sum(EXISTS(SELECT 1 FROM sd_offer o WHERE o.supplier_id=sp.supplier_id '
++                    'AND o.product_id=p.product_id AND o.amount_decimal IS NOT NULL)) '
++                    'FROM sd_supplier_product sp JOIN sd_product p USING(product_id) WHERE sp.supplier_id=?', (sid,)).fetchone()
++                s.update(family_count=stats[0], configuration_count=stats[1], priced_count=stats[2] or 0,
++                         unpriced_count=stats[1] - (stats[2] or 0),
++                         latest_quote=db.execute('SELECT MAX(quoted_on) FROM sd_offer WHERE supplier_id=?', (sid,)).fetchone()[0],
++                         gap_count=db.execute("SELECT count(*) FROM sd_gap WHERE supplier_id=? AND state='open'", (sid,)).fetchone()[0])
++                s.pop('contacts', None)
++                rows.append(s)
++            return dict(items=rows, total=len(rows))
++
++    def _evidence(self, db, kind, identity):
++        return [unpack(r) for r in db.execute('SELECT * FROM sd_evidence WHERE entity_kind=? AND entity_id=? ORDER BY field_path,evidence_id', (kind, identity))]
++
++    def _offers(self, db, clause, args):
++        result = []
++        for row in db.execute('SELECT o.*,s.name AS supplier_name FROM sd_offer o JOIN sd_supplier s USING(supplier_id) WHERE ' + clause + ' ORDER BY o.quoted_on DESC,o.offer_id', args):
++            offer = unpack(row)
++            offer['evidence'] = self._evidence(db, 'offer', offer['offer_id'])
++            result.append(offer)
++        return result
++
++    def _products(self, db, clause, args):
++        result = []
++        for row in db.execute('SELECT p.* FROM sd_product p WHERE ' + clause + ' ORDER BY p.product_family,p.variant_label,p.product_id', args):
++            p = unpack(row)
++            p['family_key'] = family_key(p['product_family'])
++            p['evidence'] = self._evidence(db, 'product', p['product_id'])
++            p['suppliers'] = [unpack(r) for r in db.execute('SELECT sp.*,s.name FROM sd_supplier_product sp JOIN sd_supplier s USING(supplier_id) WHERE product_id=? ORDER BY s.name', (p['product_id'],))]
++            p['offers'] = self._offers(db, 'o.product_id=?', (p['product_id'],))
++            p['gaps'] = [unpack(r) for r in db.execute("SELECT * FROM sd_gap WHERE product_id=? AND state='open' ORDER BY priority,gap_id", (p['product_id'],))]
++            result.append(p)
++        return result
++
++    def supplier(self, sid):
++        with readonly(self.path) as db:
++            self.check(db)
++            row = db.execute('SELECT * FROM sd_supplier WHERE supplier_id=?', (sid,)).fetchone()
++            if not row:
++                raise Missing
++            s = unpack(row)
++            s['products'] = self._products(db, 'EXISTS(SELECT 1 FROM sd_supplier_product sp WHERE sp.product_id=p.product_id AND sp.supplier_id=?)', (sid,))
++            # This view never presents another supplier's price as this supplier's.
++            for p in s['products']:
++                p['offers'] = [o for o in p['offers'] if o['supplier_id'] == sid]
++            s['other_offers'] = self._offers(db, 'o.supplier_id=? AND o.product_id IS NULL', (sid,))
++            s['gaps'] = self._gaps(db, {'supplier': sid})
++            s['evidence'] = self._evidence(db, 'supplier', sid)
++            return s
++
++    def families(self, params=None):
++        params = params or {}
++        with readonly(self.path) as db:
++            self.check(db)
++            products = self._products(db, '1=1', ())
++            families = {}
++            for p in products:
++                if params.get('category') and p['category'] != params['category']:
++                    continue
++                if params.get('q') and params['q'].casefold() not in (p['display_name'] + ' ' + (p['canonical_model'] or '') + ' ' + p['variant_label']).casefold():
++                    continue
++                key = p['family_key']
++                if key not in families:
++                    families[key] = dict(family_key=key, display_name=p['display_name'], category=p['category'], configuration_count=0, supplier_ids=[], gap_count=0, thumbnail_source_id=None, states=[])
++                f = families[key]
++                f['configuration_count'] += 1
++                f['gap_count'] += len(p['gaps'])
++                f['supplier_ids'] = sorted(set(f['supplier_ids']) | {s['supplier_id'] for s in p['suppliers']})
++                f['states'] = sorted(set(f['states']) | {p['evidence_state']})
++                if not f['thumbnail_source_id']:
++                    candidates = [e['source_id'] for e in p['evidence']]
++                    candidates += [o['source_id'] for o in p['offers']]
++                    candidates += [e['source_id'] for o in p['offers'] for e in o['evidence']]
++                    for source_id in dict.fromkeys(candidates):
++                        src = db.execute('SELECT * FROM sd_source WHERE source_id=?', (source_id,)).fetchone()
++                        if src and self.resolver and self.resolver.is_image(dict(src)):
++                            f['thumbnail_source_id'] = source_id
++                            break
++            ordered = sorted(families.values(), key=lambda f: (not bool(f['thumbnail_source_id']), f['category'], f['display_name']))
++            return dict(items=ordered, total=len(families),
++                        categories=[r[0] for r in db.execute('SELECT DISTINCT category FROM sd_product ORDER BY category')])
++
++    def family(self, key):
++        with readonly(self.path) as db:
++            self.check(db)
++            products = self._products(db, 'p.product_family=?', (family_value(key),))
++            if not products:
++                raise Missing
++            return dict(family_key=key, display_name=products[0]['display_name'], category=products[0]['category'],
++                        configurations=products,
++                        suppliers=list({s['supplier_id']: dict(supplier_id=s['supplier_id'], name=s['name']) for p in products for s in p['suppliers']}.values()))
++
++    @staticmethod
++    def _gaps(db, params):
++        clauses, args = ["g.state='open'"], []
++        for key, col in [('supplier', 'supplier_id'), ('priority', 'priority'), ('type', 'gap_type')]:
++            if params.get(key):
++                clauses.append('g.' + col + '=?')
++                args.append(params[key])
++        return [unpack(r) for r in db.execute('SELECT g.*,s.name AS supplier_name,p.display_name AS product_name FROM sd_gap g JOIN sd_supplier s USING(supplier_id) LEFT JOIN sd_product p USING(product_id) WHERE ' + ' AND '.join(clauses) + ' ORDER BY g.priority,s.name,g.gap_id', args)]
++
++    def gaps(self, params=None):
++        params = params or {}
++        with readonly(self.path) as db:
++            self.check(db)
++            rows = self._gaps(db, params)
++            page = int(params.get('page') or 1)
++            size = int(params.get('page_size') or 30)
++            return dict(items=rows[(page-1)*size:page*size], total=len(rows), page=page, page_size=size,
++                        types=[r[0] for r in db.execute("SELECT DISTINCT gap_type FROM sd_gap WHERE state='open' ORDER BY gap_type")],
++                        priorities=[r[0] for r in db.execute("SELECT DISTINCT priority FROM sd_gap WHERE state='open' ORDER BY priority")])
++
++    def queue_card(self):
++        value = self.gaps({'page_size': '5'})
++        rows = value['items']
++        return dict(total=value['total'], items=[dict(gap_id=r['gap_id'], supplier_name=r['supplier_name'], ask_text=r['ask_text'], impact=r['impact'], priority=r['priority'],
++                    to='/dossier-gaps?' + urlencode(dict(supplier=r['supplier_id']))) for r in rows])
++
++    def source(self, source_id):
++        with readonly(self.path) as db:
++            self.check(db)
++            row = db.execute('SELECT * FROM sd_source WHERE source_id=?', (source_id,)).fetchone()
++            if not row:
++                raise Missing
++            source = dict(row)
++            evidence = [unpack(r) for r in db.execute('SELECT * FROM sd_evidence WHERE source_id=? ORDER BY evidence_id', (source_id,))]
++        public = {key: source[key] for key in ('source_id', 'kind', 'locator', 'source_at', 'parse_state', 'extract_state', 'failure_reason')}
++        public.update(evidence=evidence, coverage=json.loads(source['coverage_json']))
++        if self.resolver:
++            public.update(self.resolver.resolve(source))
++        return public
++
++    def source_row(self, source_id):
++        with readonly(self.path) as db:
++            self.check(db)
++            row = db.execute('SELECT * FROM sd_source WHERE source_id=?', (source_id,)).fetchone()
++            if not row:
++                raise Missing
++            return dict(row)
+--- /dev/null
++++ b/console/dossiers/sources.py
+@@ -0,0 +1,127 @@
++"""Resolve only registered supplier sources; never accept a client file path.
++
++The existing console/media token signer is reused. Custom sd tokens carry a
++source identity and expected content hash, never an absolute filesystem path.
++"""
++import hashlib
++import json
++from pathlib import Path
++import re
++import sqlite3
++from urllib.parse import urlencode
++
++from ..inbox.model import make_key
++from ..media import files, tokens
++from .store import ROOT, readonly
++
++
++class Sources:
++    def __init__(self, *, config_path=ROOT / 'runtime.json', config=None):
++        self.config_path, self.config = config_path, config
++
++    def settings(self):
++        if self.config is not None:
++            return self.config
++        return json.loads(Path(self.config_path).read_text())
++
++    @staticmethod
++    def is_image(source):
++        coverage = json.loads(source['coverage_json'])
++        return (source['kind'] == 'nas_file' and Path(source['external_key']).suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.gif')) or (
++            source['kind'] in ('message_attachment', 'note_asset') and coverage.get('format', '').lower() in ('jpg', 'jpeg', 'png', 'webp', 'gif'))
++
++    def message(self, source):
++        if source['scope'] != 'supplier':
++            raise ValueError('source_scope_unavailable')
++        settings = self.settings()
++        parts = json.loads(source['external_key'])
++        with readonly(settings['wechat_db']) as db:
++            row = db.execute('SELECT m.group_id,m.created_at,m.payload FROM messages m WHERE m.app_id=? AND m.message_id=? '
++                "AND EXISTS(SELECT 1 FROM message_scopes s WHERE s.app_id=m.app_id AND s.message_id=m.message_id AND s.business_role='supplier')", parts[:2]).fetchone()
++            if not row:
++                raise ValueError('source_scope_unavailable')
++            if source['kind'] == 'message' and hashlib.sha256(row['payload'].encode()).hexdigest() != source['content_sha256']:
++                raise ValueError('source_changed')
++            account = '微信'
++            if not row['group_id'].endswith('@chatroom'):
++                # Private-chat accounts are scoped by app AND self identity in
++                # the reviewed companion adapter; never reuse the group key.
++                from ..channels.wechat_private import account_key
++                private = db.execute('SELECT own_wxid,peer_id FROM wechat_private_messages WHERE app_id=? AND message_id=?', parts[:2]).fetchone()
++                if not private or private['peer_id'] != row['group_id']:
++                    raise ValueError('private_binding_unavailable')
++                account = account_key(parts[0], private['own_wxid'])
++            return dict(conversation_id=row['group_id'], message_id=parts[1], message_at=row['created_at'],
++                        conversation_url='/app/inbox?' + urlencode(dict(conversation=make_key('conversation', 'wechat', account, row['group_id']), channel='wechat', message=parts[1])),
++                        original_text=json.loads(row['payload']).get('text', '') if source['kind'] == 'message' else None)
++
++    def locate(self, source):
++        """Return a confined, hash-bound file. No network or recovery writes."""
++        if source['scope'] != 'supplier':
++            raise ValueError('source_scope_unavailable')
++        settings = self.settings()
++        expected = source['file_sha256']
++        if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
++            raise ValueError('original_unavailable')
++        if source['kind'] == 'nas_file':
++            root = Path(settings['nas_root']).absolute()
++            relative = Path(source['external_key'])
++            if relative.is_absolute() or '..' in relative.parts:
++                raise ValueError('unsafe_reference')
++            path = root / relative
++            # _open below rejects symlinks in every component as well.
++            if not path.is_relative_to(root):
++                raise ValueError('unsafe_reference')
++        elif source['kind'] in ('message_attachment', 'note_asset'):
++            self.message(source)  # current supplier scope is required even for an old token
++            parts = json.loads(source['external_key'])
++            if len(parts) != 4:
++                raise ValueError('unsafe_reference')
++            with readonly(settings['wechat_db']) as db:
++                if source['kind'] == 'note_asset':
++                    row = db.execute("SELECT archive_sha256 FROM company_note_assets WHERE app_id=? AND message_id=? AND parent_ordinal=? AND ordinal=? AND archive_status='ready'", parts).fetchone()
++                else:
++                    row = db.execute("SELECT archive_sha256 FROM company_media WHERE app_id=? AND message_id=? AND ordinal=? AND archive_status='ready'", (parts[0], parts[1], parts[3])).fetchone()
++            if not row or row[0] != expected:
++                raise ValueError('source_changed')
++            path = Path(settings['blob_root']) / (expected + '.blob')
++        else:
++            raise ValueError('original_unavailable')
++        with files._open(path) as stream:
++            data = stream.read(files.MAX_BYTES + 1)
++        if not data or len(data) > files.MAX_BYTES or hashlib.sha256(data).hexdigest() != expected:
++            raise ValueError('source_changed_or_large')
++        return data, files.sniff(data[:16])
++
++    def resolve(self, source):
++        coverage = json.loads(source['coverage_json'])
++        result = dict(filename=Path(source['external_key']).name if source['kind'] == 'nas_file' else coverage.get('name'),
++                      media_url=None, mime=None, available=False)
++        try:
++            if source['kind'] in ('message', 'message_attachment', 'note_asset'):
++                result.update(self.message(source))
++            if source['kind'] == 'message':
++                result['available'] = True
++            elif source['kind'] in ('nas_file', 'message_attachment', 'note_asset'):
++                _, mime = self.locate(source)
++                key_path = Path(self.settings()['media_key'])
++                # tokens._key can create a key: never invoke it for an absent file.
++                if not key_path.is_file() or key_path.is_symlink():
++                    raise ValueError('media_key_unavailable')
++                token = tokens.make(['sd', source['source_id'], source['file_sha256']], key_path)
++                result.update(available=True, media_url='/api/v1/dossiers/media/' + token, mime=mime)
++        except (OSError, ValueError, TypeError, KeyError, ImportError, sqlite3.Error):
++            result['availability_note'] = '原件不可用、内容已变更或授权范围待核对；下方保留归档证据。'
++        return result
++
++    def media(self, token, service):
++        key_path = Path(self.settings()['media_key'])
++        if not key_path.is_file() or key_path.is_symlink():
++            raise ValueError('media_key_unavailable')
++        parts = tokens.read(token, key_path)
++        if not parts or len(parts) != 3 or parts[0] != 'sd':
++            raise ValueError('invalid_media_token')
++        source = service.source_row(parts[1])
++        if parts[2] != source['file_sha256']:
++            raise ValueError('source_changed')
++        return self.locate(source)
+--- /dev/null
++++ b/console/dossiers/store.py
+@@ -0,0 +1,41 @@
++"""No constructor opens a database or runs a migration."""
++from contextlib import contextmanager
++import os
++from pathlib import Path
++import sqlite3
++import time
++
++ROOT = Path(os.environ.get('OPS_DOSSIER_ROOT', '/var/lib/imgw/ops-app/dossiers'))
++DB_PATH = ROOT / 'dossiers.sqlite3'
++
++
++@contextmanager
++def readonly(path):
++    path = Path(path).absolute()
++    if path.is_symlink() or not path.is_file():
++        raise ValueError('dossier_unavailable')
++    wal = Path(str(path) + '-wal')
++    journal = Path(str(path) + '-journal')
++    live = wal.exists() and wal.stat().st_size > 0
++    if live and not Path(str(path) + '-shm').exists():
++        raise ValueError('wal_snapshot_unavailable')
++    if journal.exists() and journal.stat().st_size:
++        raise ValueError('journal_snapshot_unavailable')
++    before = path.stat()
++    db = sqlite3.connect(path.as_uri() + '?mode=ro' + ('' if live else '&immutable=1'), uri=True, timeout=2)
++    try:
++        db.row_factory = sqlite3.Row
++        db.execute('PRAGMA query_only=ON')
++        db.execute('PRAGMA temp_store=MEMORY')
++        deadline = time.monotonic() + 5
++        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
++        db.execute('BEGIN')
++        yield db
++    finally:
++        db.close()
++    after = path.stat()
++    if not live and ((wal.exists() and wal.stat().st_size > 0)
++            or (journal.exists() and journal.stat().st_size > 0)
++            or (before.st_ino, before.st_size, before.st_mtime_ns) !=
++               (after.st_ino, after.st_size, after.st_mtime_ns)):
++        raise ValueError('snapshot_changed')
+--- a/console/ops_queue/service.py
++++ b/console/ops_queue/service.py
+@@ -35,7 +35,9 @@
+ 
+ 
+ class OpsQueue:
+-    def __init__(self, *, paths=None, inbox=None, overview=None, pipeline=None, clock=None):
++    def __init__(self, *, paths=None, inbox=None, overview=None, pipeline=None, clock=None, dossiers=None):
++        from console.dossiers import Dossiers
++        self.dossiers = dossiers if dossiers is not None else (Dossiers() if paths is None else None)
+         self.clock = clock or time.time
+         defaults = dict(archive=ARCHIVE_PATH, inbound=INBOUND_PATH, wechat=WECHAT_PATH)
+         if paths is not None:
+@@ -192,7 +194,15 @@
+         except Exception:
+             unavailable.append('数据处理任务暂时读不到，请查看数据管道健康。')
+ 
++        supplier_dossiers = dict(ready=False, total=None, items=[])
++        try:
++            if self.dossiers is not None:
++                supplier_dossiers = dict(ready=True, **self.dossiers.queue_card())
++        except Exception:
++            unavailable.append('供应商缺资料暂时读不到，请到档案核对。')
++
+         items.sort(key=lambda item: (item['priority'], item['due_on'] or '9999', item['id']))
+         return dict(generated_at=now, items=items, total=len(items), complete=not unavailable,
++                    supplier_dossiers=supplier_dossiers,
+                     unavailable=list(dict.fromkeys(unavailable)),
+                     counts={kind: sum(i['kind'] == kind for i in items) for kind in KINDS})
+--- a/console/v3.py
++++ b/console/v3.py
+@@ -67,6 +67,8 @@
+     routes += v3_deal_workflow_api.build(app_module)
+     from . import v3_ops_r11_api
+     routes += v3_ops_r11_api.build(app_module)
++    from . import v3_dossiers_api
++    routes += v3_dossiers_api.build(app_module)
+     routes += v3_app.build(app_module)
+     routes += v3_admin.build(app_module)
+     return routes
+--- /dev/null
++++ b/console/v3_dossiers_api.py
+@@ -0,0 +1,99 @@
++"""Authenticated dossier reads, signed local media, and CSRF-protected drafts."""
++import hmac
++
++from starlette.concurrency import run_in_threadpool
++from starlette.datastructures import QueryParams
++from starlette.responses import Response
++from starlette.routing import Route
++
++from .dossiers import Dossiers
++from .dossiers.drafts import Drafts
++from .dossiers.service import Missing
++from .dossiers.sources import Sources
++from .inbox.http import authorised, forbidden, recheck, response, form_fields
++from .inbox.model import BadRequest
++
++
++def parameters(params, allowed):
++    if set(params) - set(allowed) or any(len(params.getlist(k)) != 1 for k in params):
++        raise BadRequest('筛选参数无效')
++    result = dict(params)
++    if any(len(v) > 200 for v in result.values()):
++        raise BadRequest('筛选内容过长')
++    for key in ('page', 'page_size', 'priority'):
++        if result.get(key):
++            if not result[key].isascii() or not result[key].isdigit() or not 1 <= int(result[key]) <= (100 if key == 'page_size' else 100000):
++                raise BadRequest('页码或优先级无效')
++    if result.get('type') and 'q' in allowed and result['type'] not in ('产品', '物流', '配套'):
++        raise BadRequest('供应商类型无效')
++    return result
++
++
++def build(app_module, *, service=None, drafts=None, resolver=None):
++    resolver = resolver or getattr(service, 'resolver', None) or Sources()
++    service = service or Dossiers(resolver=resolver)
++    drafts = drafts or Drafts(service)
++
++    def handler(resource, allowed=(), write=False):
++        async def serve(request):
++            if not authorised(request):
++                return forbidden(app_module, request)
++            try:
++                params = parameters(request.query_params, allowed)
++                identity = request.path_params.get('id', '')
++                if write:
++                    if not await recheck(request):
++                        return forbidden(app_module, request)
++                    # Retain host CSRF middleware, and enforce its session/header contract here too.
++                    headers = request.headers.getlist('x-csrf-token')
++                    expected = getattr(request.state.session, 'csrf', '')
++                    if len(headers) != 1 or not expected or not hmac.compare_digest(headers[0], expected):
++                        return forbidden(app_module, request)
++                    if request.headers.get('content-type', '').split(';')[0] != 'application/x-www-form-urlencoded' or int(request.headers.get('content-length', '0')) > 4096:
++                        raise BadRequest('请用表单生成草稿')
++                    fields = await form_fields(request)
++                    if set(fields) - {'priority', 'type'} or any(len(v) > 200 for v in fields.values()):
++                        raise BadRequest('草稿筛选无效')
++                    params = parameters(QueryParams(fields), ('priority', 'type'))
++                    if not await recheck(request):
++                        return forbidden(app_module, request)
++                    payload = await run_in_threadpool(drafts.create, identity, params, request.state.password_principal.username)
++                elif resource == 'media':
++                    try:
++                        data, mime = await run_in_threadpool(resolver.media, request.path_params['token'], service)
++                    except Exception:
++                        raise Missing from None
++                    if not await recheck(request):
++                        return forbidden(app_module, request)
++                    headers = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
++                    if mime == 'application/pdf':
++                        headers['Content-Disposition'] = 'inline; filename="source.pdf"'
++                    elif not mime.startswith('image/'):
++                        headers['Content-Disposition'] = 'attachment; filename="source"'
++                    return Response(data, media_type=mime, headers=headers)
++                else:
++                    read = {'suppliers': lambda: service.suppliers(params), 'supplier': lambda: service.supplier(identity),
++                            'families': lambda: service.families(params), 'family': lambda: service.family(identity),
++                            'gaps': lambda: service.gaps(params), 'source': lambda: service.source(identity),
++                            'drafts': lambda: drafts.list(identity)}[resource]
++                    payload = await run_in_threadpool(read)
++                code = 200
++            except Missing:
++                payload, code = {'error': '档案、原件或缺口不存在'}, 404
++            except BadRequest as error:
++                payload, code = {'error': str(error)}, 400
++            except Exception:
++                payload, code = {'error': '档案暂时无法读取或草稿未能存档，请刷新重试'}, 503
++            if not await recheck(request):
++                return forbidden(app_module, request)
++            return response(payload, code)
++        return serve
++
++    definitions = [('/suppliers', 'suppliers', ('q', 'type')), ('/suppliers/{id}', 'supplier', ()),
++                   ('/families', 'families', ('q', 'category')), ('/families/{id}', 'family', ()),
++                   ('/gaps', 'gaps', ('supplier', 'priority', 'type', 'page', 'page_size')),
++                   ('/sources/{id}', 'source', ()), ('/media/{token}', 'media', ()),
++                   ('/suppliers/{id}/drafts', 'drafts', ())]
++    routes = [Route('/api/v1/dossiers' + path, handler(resource, allowed), methods=['GET'], name='dossiers_' + resource) for path, resource, allowed in definitions]
++    routes.append(Route('/api/v1/dossiers/suppliers/{id}/drafts', handler('create_draft', write=True), methods=['POST'], name='dossiers_create_draft'))
++    return routes

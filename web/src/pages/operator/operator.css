@@ -29,3 +29,6 @@
 .operator-page .btn { min-height: 44px; }
 .operator-page .danger { color: #a52b31; border-color: #dbaeb0; margin: 12px; }
 @media (max-width: 600px) { .operator-section { padding: 14px; } .operator-card { padding: 12px; } .operator-page th, .operator-page td { padding: 8px 5px; } .operator-page .page-head { flex-wrap: wrap; } .operator-levels > div { min-width: 100%; box-sizing: border-box; } }
+
+.operator-timeline { display: grid; gap: 1rem; border-left: 2px solid #c6d6dc; padding-left: 1rem; }
+.operator-timeline li { overflow-wrap: anywhere; }

@@ -23,8 +23,8 @@ const WAIT = Number(process.env.WAIT ?? 250);
 const OVERVIEW_ONLY = process.env.ONLY === "overview";
 const ERROR_TEXT = /没能读到|没能打开|没能查到|暂时无法|请求没有成功|Something went wrong/;
 
-const FRONT = ["总览", "商机沟通", "案子", "客户", "供应商", "产品", "备货与发货", "知识检索", "AI 员工"];
-const FRONT_PATHS = ["/", "/inbox", "/deals", "/customers", "/suppliers", "/products", "/fulfilment", "/search", "/roles"];
+const FRONT = ["总览", "商机沟通", "案子", "客户", "供应商档案", "产品档案", "缺资料", "备货与发货", "知识检索", "AI 员工", "AI 运营员"];
+const FRONT_PATHS = ["/", "/inbox", "/deals", "/customers", "/supplier-dossiers", "/product-dossiers", "/dossier-gaps", "/fulfilment", "/search", "/roles", "/operator"];
 const BACK = ["渠道接入", "数据管道健康", "阿里订单接入", "知识中枢", "语言设置", "账号与权限旧后台", "待整理会话", "待分类", "微信通讯录", "数据体检", "货代运价", "价格建议", "供应商包装核对", "需求与验收"];
 const BACK_PATHS = ["/system/channels", "/system/pipeline", "/system/alibaba-open", "/system/knowledge", "/system/language", "/v3/admin", "/triage", "/classify", "/directory", "/audit", "/freight", "/prices", "/packing", "/requirements"];
 const BACK_TOOLS = new Set(["/triage", "/classify", "/directory", "/audit", "/freight", "/prices", "/packing", "/requirements"]);
@@ -61,6 +61,7 @@ const PAGES = [
   ["工作台保留页", "/workbench"], ["案子列表", "/deals"], ["案子列表-要我处理", "/deals?waiting=us"],
   ["商机沟通", "/inbox"], ["商机沟通-微信含供应商", "/inbox?channel=wechat&role=all"], ["客户", "/customers"],
   ["知识检索", "/search"], ["知识检索-搜索", "/search?q=" + encodeURIComponent("外箱尺寸")],
+  ["供应商档案", "/supplier-dossiers"], ["产品档案", "/product-dossiers"], ["缺资料", "/dossier-gaps"], ["AI 运营员", "/operator"],
   ["供应商", "/suppliers"], ["产品", "/products"], ["货代运价", "/freight"], ["包装核对", "/packing"],
   ["灵感库", "/inspiration"], ["怎么用", "/guide"], ["待整理会话", "/triage"], ["AI 员工", "/roles"], ["微信通讯录", "/directory"], ["数据体检", "/audit"], ["价格建议", "/prices"], ["备货与发货", "/fulfilment"], ["微信通讯录-没接入", "/directory?state=not_enrolled"], ["需求与验收", "/requirements"],
   ["系统总览", "/system"], ["渠道接入", "/system/channels"], ["数据管道健康", "/system/pipeline"], ["阿里订单接入", "/system/alibaba-open"], ["待分类", "/classify"], ["语言设置", "/system/language"], ["知识中枢", "/system/knowledge"], ["旧版工具", "/system/legacy"],

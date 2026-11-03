@@ -1,4 +1,5 @@
 import { PageIntro } from "./overview/PageIntro";
+import { Link } from "react-router";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -164,6 +165,7 @@ export function Products() {
         </div>
       </div>
       <PageIntro page="products" />
+      <p className="callout">这里核准旧产品候选。<Link to="/product-dossiers">查看带来源的产品档案与跨供应商配置对比</Link></p>
       <div className="toolbar">
         <Segmented label="产品状态" value={status} onChange={(value) => set({ status: value })}
           options={[{ value: "candidate", label: "待确认", count: c?.candidate }, { value: "confirmed", label: "已确认", count: c?.confirmed }, { value: "hidden", label: "已隐藏", count: c?.hidden }]} />

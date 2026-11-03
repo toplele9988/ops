@@ -1,3 +1,4 @@
+import { SupplierDossiers, ProductDossiers, DossierGaps } from "./pages/Dossiers";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router";
 import { AppShell } from "./layout/AppShell";
@@ -21,6 +22,7 @@ import { ClassifyPage } from "./pages/Classify";
 import { FulfilBoardPage } from "./pages/FulfilBoard";
 import { LegacyPage } from "./pages/Legacy";
 import { Guide } from "./pages/Guide";
+import { Operator } from "./pages/Operator";
 import { RolesPage } from "./pages/Roles";
 import { TriagePage } from "./pages/Triage";
 import { Products } from "./pages/Products";
@@ -56,6 +58,7 @@ export default function App() {
               <Route path="classify" element={<ClassifyPage />} />
               <Route path="triage" element={<TriagePage />} />
               <Route path="roles" element={<RolesPage />} />
+              <Route path="operator" element={<Operator />} />
               <Route path="deals" element={<Deals />} />
               <Route path="deals/:id" element={<DealPage />} />
               <Route path="quotes/:id" element={<QuotePage />} />
@@ -71,6 +74,11 @@ export default function App() {
               <Route path="inspiration" element={<Inspiration />} />
               <Route path="requirements" element={<Requirements />} />
               <Route path="search" element={<Search />} />
+              <Route path="supplier-dossiers" element={<SupplierDossiers />} />
+              <Route path="supplier-dossiers/:id" element={<SupplierDossiers />} />
+              <Route path="product-dossiers" element={<ProductDossiers />} />
+              <Route path="product-dossiers/:id" element={<ProductDossiers />} />
+              <Route path="dossier-gaps" element={<DossierGaps />} />
               <Route path="suppliers" element={<Suppliers />} />
               <Route path="suppliers/:id" element={<Suppliers />} />
               <Route path="products" element={<Products />} />

@@ -35,7 +35,9 @@ def inbox_link(key, channel=''):
 
 
 class OpsQueue:
-    def __init__(self, *, paths=None, inbox=None, overview=None, pipeline=None, clock=None):
+    def __init__(self, *, paths=None, inbox=None, overview=None, pipeline=None, clock=None, dossiers=None):
+        from console.dossiers import Dossiers
+        self.dossiers = dossiers if dossiers is not None else (Dossiers() if paths is None else None)
         self.clock = clock or time.time
         defaults = dict(archive=ARCHIVE_PATH, inbound=INBOUND_PATH, wechat=WECHAT_PATH)
         if paths is not None:
@@ -100,9 +102,17 @@ class OpsQueue:
             return {r['conversation_key']: dict(r) for r in db.execute('SELECT * FROM inbox_workflow')}
         states = archive_read('会话处理状态', workflow_states) or {}
         owners.update(result or {})
+        private_ownership_keys = set()
         for key, conv in conversations.items():
             owner = owners.get(key, {})
             role = owner.get('kind', conv.get('counterpart_role', 'customer'))
+            if (conv.get('business_role') == 'unknown' and not owner
+                    and conv.get('channel') == 'wechat' and not conv.get('is_group')):
+                private_ownership_keys.add(key)
+                add('ownership', key, conv.get('buyer_name') or '未命名联系人',
+                    '微信私聊对象尚未确认是客户、供应商、货代还是配套供应商。',
+                    '/triage?' + urlencode(dict(conversation=key)), '去确认归属', 4,
+                    [key, conv.get('last_seen'), 'private_unknown'])
             last = next((m for m in reversed(conv.get('messages', ())) if m['role'] != 'unknown'), None)
             if not last or conv.get('dormant') or conv.get('ignored'):
                 continue
@@ -165,6 +175,8 @@ class OpsQueue:
         def triage(db):
             return [dict(r) for r in db.execute("SELECT id,conversation_key,updated_at FROM triage_suggestions WHERE status='pending'")]
         for row in archive_read('待确认归属', triage) or []:
+            if row['conversation_key'] in private_ownership_keys:
+                continue
             add('ownership', row['id'], '有一条会话等你确认归属', '核对往来单位和案子，再采用或修改建议。',
                 '/triage?' + urlencode(dict(conversation=row['conversation_key'], suggestion=row['id'])),
                 '去确认归属', 5, row)
@@ -192,7 +204,15 @@ class OpsQueue:
         except Exception:
             unavailable.append('数据处理任务暂时读不到，请查看数据管道健康。')
 
+        supplier_dossiers = dict(ready=False, total=None, items=[])
+        try:
+            if self.dossiers is not None:
+                supplier_dossiers = dict(ready=True, **self.dossiers.queue_card())
+        except Exception:
+            unavailable.append('供应商缺资料暂时读不到，请到档案核对。')
+
         items.sort(key=lambda item: (item['priority'], item['due_on'] or '9999', item['id']))
         return dict(generated_at=now, items=items, total=len(items), complete=not unavailable,
+                    supplier_dossiers=supplier_dossiers,
                     unavailable=list(dict.fromkeys(unavailable)),
                     counts={kind: sum(i['kind'] == kind for i in items) for kind in KINDS})

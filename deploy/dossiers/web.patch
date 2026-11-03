@@ -1,0 +1,346 @@
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -1,3 +1,4 @@
++import { SupplierDossiers, ProductDossiers, DossierGaps } from "./pages/Dossiers";
+ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+ import { BrowserRouter, Route, Routes } from "react-router";
+ import { AppShell } from "./layout/AppShell";
+@@ -71,6 +72,11 @@
+               <Route path="inspiration" element={<Inspiration />} />
+               <Route path="requirements" element={<Requirements />} />
+               <Route path="search" element={<Search />} />
++              <Route path="supplier-dossiers" element={<SupplierDossiers />} />
++              <Route path="supplier-dossiers/:id" element={<SupplierDossiers />} />
++              <Route path="product-dossiers" element={<ProductDossiers />} />
++              <Route path="product-dossiers/:id" element={<ProductDossiers />} />
++              <Route path="dossier-gaps" element={<DossierGaps />} />
+               <Route path="suppliers" element={<Suppliers />} />
+               <Route path="suppliers/:id" element={<Suppliers />} />
+               <Route path="products" element={<Products />} />
+--- /dev/null
++++ b/web/src/dossiers.ts
+@@ -0,0 +1,15 @@
++export interface Evidence { evidence_id: string; source_id: string; field_path: string; locator: string; excerpt: string; evidence_state: string }
++export interface Gap { gap_id: string; supplier_id: string; supplier_name?: string; product_id: string | null; product_name?: string; gap_type: string; priority: number; ask_text: string; impact: string; source_refs: string[] }
++export interface Offer { offer_id: string; supplier_id: string; supplier_name: string; amount_decimal: string | null; amount_raw: string; currency: string | null; tax_basis: string; tax_rate_text: string | null; unit: string | null; price_kind: string; quote_state: string; quoted_on: string | null; document_period: string | null; valid_until: string | null; moq_text: string | null; quantity_condition: string | null; lead_time_text: string | null; conditions: Record<string, unknown>; source_id: string; locator: string; evidence: Evidence[] }
++export interface Configuration { product_id: string; family_key: string; display_name: string; category: string; canonical_model: string | null; variant_label: string; evidence_state: string; config: Record<string, unknown>; evidence: Evidence[]; suppliers: {supplier_id: string; name: string; model_aliases: string[]}[]; offers: Offer[]; gaps: Gap[] }
++export interface Supplier { supplier_id: string; name: string; supplier_type: string; categories: string[]; reliability_notes: string; family_count: number; configuration_count: number; priced_count: number; unpriced_count: number; latest_quote: string | null; gap_count: number }
++export interface SupplierDetail extends Supplier { products: Configuration[]; gaps: Gap[]; evidence: Evidence[]; other_offers: Offer[] }
++export interface Family { family_key: string; display_name: string; category: string; configuration_count: number; supplier_ids: string[]; states: string[]; gap_count: number; thumbnail_source_id: string | null }
++export interface FamilyDetail { family_key: string; display_name: string; category: string; configurations: Configuration[]; suppliers: {supplier_id: string; name: string}[] }
++export interface Source { source_id: string; kind: string; locator: string; source_at: string | null; parse_state: string; extract_state: string; failure_reason: string | null; filename?: string; media_url?: string; mime?: string; original_text?: string; conversation_id?: string; message_at?: number; conversation_url?: string; available?: boolean; availability_note?: string; evidence: Evidence[] }
++export interface QuestionDraft { draft_id: string; supplier_id: string; text: string; state: string; gap_ids_json: string; created_at: string; created_by: string }
++export const known = (value?: string | null) => !value || value === "unknown" ? "未知" : value;
++export const priceKind: Record<string, string> = {unit_price:"单价",freight_quote:"运费报价",freight_base:"运费基础价",freight_surcharge:"运费附加费",package_total:"套装总额",case_upgrade:"箱体升级费",configuration_surcharge:"配置加价"};
++export const quoteStates: Record<string,string> = {observed:"原文记录",historical:"历史参考",ambiguous:"关联待确认",superseded:"已被新报价替代",retracted:"已撤回",unquoted:"未报价",promotional:"宣传参考",tentative:"待确认"};
++export const taxBases: Record<string,string> = {unknown:"未知",included:"含税",excluded:"未税",header_rule:"依原文表头规则"};
++export const gapTypes: Record<string, string> = {unquoted:"未报价",quote_terms:"报价条件",packing_confirmation:"包装待确认",moq_missing:"起订量",lead_time_missing:"交期",certification_missing:"认证资料",legacy_model_confirmation:"旧型号待核实",packing_conflict:"包装冲突",power_conflict:"功率冲突",cooling_conflict:"散热冲突"};
+--- a/web/src/nav.ts
++++ b/web/src/nav.ts
+@@ -26,6 +26,9 @@
+ }
+ 
+ const PAGES: NavItem[] = [
++  { key: "supplier-dossiers", label: "供应商档案", path: "/supplier-dossiers", kind: "live", area: "front", group: "产品与供应商", icon: Factory },
++  { key: "product-dossiers", label: "产品档案", path: "/product-dossiers", kind: "live", area: "front", group: "产品与供应商", icon: Boxes },
++  { key: "dossier-gaps", label: "缺资料", path: "/dossier-gaps", kind: "live", area: "front", group: "产品与供应商", icon: ClipboardCheck },
+   { key: "overview", label: "总览", path: "/", kind: "live", area: "front", group: "日常工作", icon: LayoutDashboard },
+   { key: "guide", label: "怎么用", path: "/guide", kind: "live", area: "front", group: "日常工作", icon: BookOpenText },
+   { key: "workbench", label: "工作台", path: "/workbench", kind: "live", area: "front", group: "日常工作", icon: Home },
+@@ -86,6 +89,7 @@
+ // Fixed business order; hidden pages never become navigation by registering a route.
+ const ORDER = [
+   "overview", "inbox", "deals", "customers", "suppliers", "products", "fulfil", "search", "roles",
++  "supplier-dossiers", "product-dossiers", "dossier-gaps",
+   "channels", "pipeline", "alibaba-open", "knowledge", "language", "admin",
+   "triage", "classification-review", "directory", "audit", "freight", "prices", "packing", "requirements",
+ ];
+--- a/web/src/ops/queue.ts
++++ b/web/src/ops/queue.ts
+@@ -1,3 +1,4 @@
++import type { SupplierGapSummary } from "../pages/overview/SupplierGapCard";
+ import { useEffect, useState } from "react";
+ 
+ export interface QueueItem {
+@@ -5,6 +6,7 @@
+   to: string; action: string; priority: number; revision: string; due_on: string | null;
+ }
+ export interface QueueResponse {
++  supplier_dossiers?: SupplierGapSummary;
+   generated_at: number; items: QueueItem[]; total: number; complete: boolean;
+   unavailable: string[]; counts: Record<string, number>;
+ }
+--- /dev/null
++++ b/web/src/pages/Dossiers.css
+@@ -0,0 +1,99 @@
++.ds-page { min-width: 0; }
++.ds-page h1 { margin: 4px 0 8px; }
++.ds-page h2 { font-size: 20px; margin: 24px 0 14px; }
++.ds-page h3 { font-size: 15px; margin: 8px 0; }
++.ds-page p { line-height: 1.65; }
++.ds-eyebrow { color: var(--label-2); font-size: 12px; letter-spacing: .08em; }
++.ds-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; padding-bottom: 14px; border-bottom: 1px solid var(--separator); }
++.ds-tabs a { padding: 8px 12px; border-radius: 8px; background: var(--fill-3, #f1f3f5); color: var(--label-1); font-weight: 600; }
++.ds-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 18px 0; }
++.ds-toolbar .field { flex: 1 1 260px; min-width: 0; }
++.ds-toolbar .select { max-width: 100%; }
++.ds-toolbar select { max-width: 100%; }
++.ds-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 16px; }
++.ds-supplier-card,.ds-product-card { border: 1px solid var(--separator); border-radius: 14px; background: var(--surface, white); color: inherit; overflow: hidden; transition: border-color .15s; min-width: 0; }
++.ds-supplier-card { padding: 20px; display: flex; flex-direction: column; }
++.ds-supplier-card:hover,.ds-product-card:hover { border-color: var(--blue, #1871cf); }
++.ds-card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
++.ds-factory { color: #286d71; background: #e8f2f1; padding: 10px; border-radius: 10px; display: inline-flex; }
++.ds-supplier-card h2 { margin: 16px 0 6px; font-size: 19px; }
++.ds-categories { margin: 0; color: var(--label-2); min-height: 48px; }
++.ds-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; padding: 18px 0; margin: 0; }
++.ds-stats dt { font-size: 12px; color: var(--label-2); }
++.ds-stats dd { font-size: 25px; font-weight: 650; margin: 4px 0 0; font-variant-numeric: tabular-nums; }
++.ds-card-bottom { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; margin-top: auto; padding-top: 14px; border-top: 1px solid var(--separator); font-size: 11px; color: var(--label-2); }
++.ds-gap-count,.ds-next { color: #a15216; display: inline-flex; gap: 5px; align-items: center; }
++.ds-detail-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin: 20px 0; }
++.ds-note { background: #f2f6f5; border: 1px solid #d7e6e0; border-radius: 10px; padding: 16px; margin: 18px 0; color: #30574b; overflow-wrap: anywhere; }
++.ds-note p { margin: 8px 0 0; }
++.ds-table-wrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--separator); border-radius: 12px; background: var(--surface, white); }
++.ds-table { width: 100%; border-collapse: collapse; text-align: left; table-layout: auto; }
++.ds-table th { padding: 14px 16px; background: var(--fill-3, #f4f5f7); font-size: 12px; white-space: normal; }
++.ds-table td { padding: 16px; vertical-align: top; border-top: 1px solid var(--separator); overflow-wrap: anywhere; min-width: 210px; max-width: 460px; }
++.ds-config-cell { min-width: 210px; max-width: 430px; }
++.ds-config-cell p { margin: 8px 0; }
++.ds-page details { margin: 12px 0; }
++.ds-page summary { cursor: pointer; color: var(--blue, #206bbd); font-size: 13px; padding: 6px 0; }
++.ds-config { font-size: 12px; margin: 10px 0; }
++.ds-config div { display: grid; grid-template-columns: minmax(70px, .7fr) minmax(0, 1.3fr); border-bottom: 1px solid var(--separator); padding: 8px 0; gap: 8px; }
++.ds-config dt { color: var(--label-2); }
++.ds-config dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
++.ds-quote { padding: 12px 0; border-bottom: 1px solid var(--separator); }
++.ds-quote:first-child { padding-top: 0; }
++.ds-quote:last-child { border-bottom: 0; }
++.ds-quote-top { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
++.ds-price { color: #22645b; font-size: 23px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
++.ds-terms { color: var(--label-2); font-size: 12px; margin: 8px 0; }
++.ds-source { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #cbdbe8; border-radius: 5px; color: #315b7f; background: #f1f7fb; font-size: 11px; line-height: 1.5; padding: 3px 6px; cursor: pointer; text-align: left; max-width: 100%; overflow-wrap: anywhere; }
++.ds-tags { display: flex; flex-wrap: wrap; gap: 6px; }
++.ds-source-body { overflow-wrap: anywhere; }
++.ds-source-close { position: sticky; top: 0; display: block; margin-left: auto; z-index: 1; }
++.ds-source-body blockquote { white-space: pre-wrap; border-left: 3px solid #ced8e0; padding: 10px 14px; margin: 12px 0; background: #f6f8fa; font-size: 13px; }
++.ds-original { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; margin: 18px 0; }
++.ds-evidence { padding: 12px 0; border-bottom: 1px solid var(--separator); }
++.ds-evidence.selected { background: #fffaeb; }
++.ds-evidence p { font-size: 12px; }
++.ds-gap-list { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,330px),1fr)); gap: 12px; margin: 14px 0; }
++.ds-gap { padding: 18px; border: 1px solid var(--separator); border-radius: 10px; background: var(--surface,white); min-width: 0; overflow-wrap: anywhere; }
++.ds-gap header { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; color: var(--label-2); font-size: 12px; }
++.ds-gap h3 { line-height: 1.65; }
++.ds-gap p { font-size: 13px; color: var(--label-2); }
++.ds-gap-supplier { display: block; margin-top: 12px; font-weight: 650; }
++.ds-conflict { color: #a43b24; background: #fff0e8; padding: 8px; border-radius: 5px; font-size: 12px; }
++.ds-unquoted { color: #8c6944; display: block; padding: 12px 0; }
++.ds-thumb { height: 154px; background: #eef1f3; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #8b99a5; font-size: 11px; }
++.ds-thumb img { width: 100%; height: 100%; object-fit: contain; background: #edf1f3; }
++.ds-product-copy { padding: 16px; }
++.ds-product-copy p { font-size: 12px; color: var(--label-2); }
++.ds-next { font-size: 12px; }
++.ds-mobile-label { display: none; }
++.ds-draft-panel { padding: 20px; background: #edf4f8; border: 1px solid #c9dce8; border-radius: 12px; margin: 18px 0; }
++.ds-draft-panel h2 { margin: 0 0 6px; }
++.ds-draft-panel p { font-size: 13px; }
++.ds-draft-result textarea { display: block; width: 100%; max-width: 100%; margin: 10px 0; background: white; border: 1px solid #b7cbd7; border-radius: 8px; padding: 12px; resize: vertical; line-height: 1.7; }
++.ds-draft-result label { font-weight: 600; }
++.ds-archive-draft pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.7; }
++.ds-error { display: flex; gap: 12px; background: #fff0eb; color: #9c3f27; padding: 18px; border-radius: 10px; margin: 16px 0; }
++.ds-error p { font-size: 13px; }
++.ds-queue-card { border: 1px solid #dbc9af; background: #fffaf1; border-radius: 12px; padding: 18px; margin: 14px 0; }
++.ds-queue-card h3 { margin: 0 0 8px; }
++.ds-queue-card ol { margin: 10px 0; padding-left: 20px; }
++.ds-queue-card li { padding: 5px 0; overflow-wrap: anywhere; font-size: 13px; }
++@media(max-width:600px) {
++  .ds-toolbar { align-items: stretch; }
++  .ds-toolbar>* { width: 100%; }
++  .ds-toolbar .field { flex-basis: 100%; }
++  .ds-supplier-card { padding: 16px; }
++  .ds-table-wrap { overflow: visible; border: 0; background: transparent; }
++  .ds-table,.ds-table tbody,.ds-table tr,.ds-table td { display: block; width: 100%; min-width: 0; max-width: 100%; }
++  .ds-table thead { display: none; }
++  .ds-table tr { border: 1px solid var(--separator); border-radius: 10px; background: var(--surface,white); margin-bottom: 14px; overflow: hidden; }
++  .ds-table td { padding: 14px; }
++  .ds-table td:first-child { border-top: 0; background: #f8f9fa; }
++  .ds-config-cell { min-width: 0; }
++  .ds-mobile-label { display: block; font-weight: 650; margin-bottom: 12px; color: #365568; }
++  .ds-tabs { gap: 4px; }
++  .ds-tabs a { font-size: 13px; padding: 8px; }
++  .ds-draft-panel { padding: 14px; }
++}
++@media(prefers-reduced-motion:reduce) {.ds-supplier-card,.ds-product-card { transition: none; }}
+--- /dev/null
++++ b/web/src/pages/Dossiers.tsx
+@@ -0,0 +1,118 @@
++import { useMutation, useQuery } from "@tanstack/react-query";
++import { FileText, Image as ImageIcon, ArrowRight, Package, AlertCircle, Factory } from "lucide-react";
++import { useState } from "react";
++import { Link, useParams, useSearchParams } from "react-router";
++import { ApiError, copyText, get, postForm, qs } from "../api";
++import { type Configuration, type Evidence, type Family, type FamilyDetail, type Gap, type Offer, type QuestionDraft, type Source, type Supplier, type SupplierDetail, gapTypes, known, priceKind, quoteStates, taxBases } from "../dossiers";
++import { Chip, Empty, Pick, SearchField, Sheet, Skeleton } from "../ui/bits";
++import "./Dossiers.css";
++
++const API = "/api/v1/dossiers";
++const read = <T,>(url: string) => get<T>(API + url);
++function Failure({error, retry}: {error: Error | null; retry: () => void}) {
++  return <div role="alert" className="ds-error"><AlertCircle size={20}/><div><b>{error instanceof ApiError && error.status === 404 ? "档案接口尚未部署或记录不存在" : "读取失败"}</b><p>{error?.message}。请重试。</p><button className="btn sm" onClick={retry}>重试</button></div></div>;
++}
++function Heading({title, text}: {title:string; text:string}) {
++  return <><div className="page-head"><div><div className="ds-eyebrow">采购资料 · 带来源的档案</div><h1>{title}</h1><p>{text}</p></div></div><nav className="ds-tabs" aria-label="档案导航"><Link to="/supplier-dossiers">供应商档案</Link><Link to="/product-dossiers">产品档案</Link><Link to="/dossier-gaps">缺资料</Link></nav></>;
++}
++function useFilters() {
++  const [params, setParams] = useSearchParams();
++  const set = (key:string, value:string) => setParams(prev=>{const p=new URLSearchParams(prev);value?p.set(key,value):p.delete(key);if(key!=="page")p.delete("page");return p;});
++  return {params,set};
++}
++function SourceEvidence({items,locator}: {items:Evidence[];locator?:string}) {
++  const matching=locator?items.filter(e=>e.locator===locator):[];
++  const selected=(matching.length?matching:items).slice(0,8),ids=new Set(selected.map(e=>e.evidence_id)),other=items.filter(e=>!ids.has(e.evidence_id));
++  const row=(e:Evidence)=><div className={`ds-evidence${locator===e.locator?" selected":""}`} key={e.evidence_id}><b>{e.field_path}</b><p>{e.locator} · {e.evidence_state}</p><blockquote>{e.excerpt}</blockquote></div>;
++  return <>{selected.map(row)}{other.length>0&&<details><summary>展开该来源的其他 {other.length} 条字段证据</summary>{other.map(row)}</details>}</>;
++}
++function SourceTag({id, locator, label="来源"}: {id:string; locator?:string; label?:string}) {
++  const [open,setOpen]=useState(false);
++  const q=useQuery({queryKey:["dossier-source",id],queryFn:()=>read<Source>(`/sources/${encodeURIComponent(id)}`),enabled:open,retry:false});
++  const [imageFailed, setImageFailed]=useState(false);
++  return <><button className="ds-source" onClick={()=>setOpen(true)} aria-label={`查看${label} ${locator||id}`}><FileText size={12}/>{label}{locator && locator!=="text" ? ` · ${locator.split(":bbox")[0]}` : ""}</button>
++    <Sheet open={open} title="核对来源" onClose={()=>setOpen(false)}>
++      <button className="btn ds-source-close" onClick={()=>setOpen(false)}>关闭来源</button>
++      {q.isLoading&&<Skeleton/>}{q.isError&&<Failure error={q.error} retry={()=>q.refetch()}/>}
++      {q.data&&<div className="ds-source-body"><Chip>{q.data.kind}</Chip><h3>{q.data.filename||"归档消息与证据"}</h3><p>来源时间：{known(q.data.source_at)}</p><p>位置：{locator||q.data.locator||"未知"}</p>
++        {q.data.availability_note&&<div className="ds-note">{q.data.availability_note}</div>}
++        {q.data.conversation_url&&<><p>会话：{q.data.conversation_id} · 时间：{q.data.message_at ? new Date(q.data.message_at*1000).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未知"}（北京时间）</p><a className="btn sm" href={q.data.conversation_url}>打开原会话</a></>}
++        {q.data.original_text&&<blockquote>{q.data.original_text}</blockquote>}
++        {q.data.media_url&&q.data.mime?.startsWith("image/")&&!imageFailed&&<a href={q.data.media_url} target="_blank" rel="noreferrer"><img className="ds-original" src={q.data.media_url} alt="来源原图" onError={()=>setImageFailed(true)}/></a>}
++        {imageFailed&&<p role="alert">原图加载失败，请重新核对来源。</p>}
++        {q.data.media_url&&<a className="btn sm" href={q.data.media_url+(q.data.mime==="application/pdf"?`#page=${(locator||q.data.locator||"").match(/page:(\d+)/)?.[1]||1}`:"")} target="_blank" rel="noreferrer">{q.data.mime?.startsWith("image/")?"打开原图":q.data.mime==="application/pdf"?"打开 PDF 原文件对应页":"下载原文件，按上述页码或单元格核对"}</a>}
++        <h3>逐字段证据</h3>{q.data.evidence.length ? <SourceEvidence items={q.data.evidence} locator={locator}/>:<p>尚无逐字段片段，请核对原件。</p>}
++        <p className="t-cap">解析：{q.data.parse_state} · 整理：{q.data.extract_state}{q.data.failure_reason&&` · ${q.data.failure_reason}`}</p></div>}
++    </Sheet></>;
++}
++function EvidenceTags({items}: {items:Evidence[]}) {
++  return <span className="ds-tags">{items.map(e=><SourceTag key={e.evidence_id} id={e.source_id} locator={e.locator} label={e.field_path}/>)}</span>;
++}
++function Thumbnail({id}: {id:string|null}) {
++  const [enabled,setEnabled]=useState(false),[failed,setFailed]=useState(false);
++  const q=useQuery({queryKey:["dossier-source",id],queryFn:()=>read<Source>(`/sources/${encodeURIComponent(id!)}`),enabled:!!id&&enabled,retry:false});
++  return <div className="ds-thumb" ref={node=>{if(!node||enabled)return;const observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)){setEnabled(true);observer.disconnect();}});observer.observe(node);return()=>observer.disconnect();}}>
++    {q.data?.media_url&&q.data.mime?.startsWith("image/")&&!failed?<img src={q.data.media_url} alt="产品原图缩略" loading="lazy" onError={()=>setFailed(true)}/>:<><ImageIcon size={30}/><span>{id?"原图待核对":"暂无原图"}</span></>}
++  </div>;
++}
++function Quote({offer}: {offer:Offer}) {
++  return <article className="ds-quote"><div className="ds-quote-top"><b className="ds-price">{offer.amount_decimal!==null?offer.amount_decimal:"未报价"}</b><Chip tone="plain">{priceKind[offer.price_kind]||offer.price_kind}</Chip></div>
++    {offer.amount_decimal===null&&<p>金额原文：{offer.amount_raw}</p>}
++    <p className="ds-terms">币种 {known(offer.currency)} · 税制 {taxBases[offer.tax_basis]||known(offer.tax_basis)}{offer.tax_rate_text&&` / ${offer.tax_rate_text}`} · 单位 {known(offer.unit)}</p>
++    <p className="ds-terms">报价日期 {known(offer.quoted_on)}{offer.document_period&&` · 文档期间 ${offer.document_period}`}<br/>有效期 {known(offer.valid_until)} · 状态 {quoteStates[offer.quote_state]||known(offer.quote_state)}</p>
++    <SourceTag id={offer.source_id} locator={offer.locator}/>
++    <details><summary>报价条件与字段证据</summary><p>金额原文：{offer.amount_raw}</p><p>MOQ {known(offer.moq_text)} · 数量条件 {known(offer.quantity_condition)} · 交期 {known(offer.lead_time_text)}</p><dl className="ds-config">{Object.entries(offer.conditions).map(([k,v])=><div key={k}><dt>{k}</dt><dd>{typeof v==="string"?v:JSON.stringify(v)}</dd></div>)}</dl><EvidenceTags items={offer.evidence}/></details>
++  </article>;
++}
++function Config({item}: {item:Configuration}) {
++  const conflicts=item.gaps.filter(g=>/conflict|correction|misfiled/.test(g.gap_type));
++  return <div className="ds-config-cell"><Link to={`/product-dossiers/${item.family_key}`}><b>{item.canonical_model||item.display_name}</b></Link><p>{item.variant_label}</p><Chip tone={item.evidence_state==="原文明确"?"plain":"orange"}>{item.evidence_state}</Chip>{conflicts.length>0&&<p className="ds-conflict">冲突 / 待核实：{conflicts.map(g=>g.impact).join("；")}</p>}
++    <details><summary>查看配置与来源</summary><dl className="ds-config">{Object.entries(item.config).map(([k,v])=><div key={k}><dt>{k}</dt><dd>{typeof v==="string"?v:JSON.stringify(v)}</dd></div>)}</dl><EvidenceTags items={item.evidence}/></details></div>;
++}
++function GapCards({gaps, limit=30}: {gaps:Gap[];limit?:number}) {
++  const [all,setAll]=useState(false);
++  return <><div className="ds-gap-list">{gaps.slice(0,all?gaps.length:limit).map(g=><article className="ds-gap" key={g.gap_id} data-testid="dossier-gap"><header><Chip tone={g.priority<=5?"orange":"plain"}>优先级 {g.priority}</Chip><span>{gapTypes[g.gap_type]||g.gap_type}</span></header>{g.supplier_name&&<Link className="ds-gap-supplier" to={`/supplier-dossiers/${g.supplier_id}`}>该问 {g.supplier_name}</Link>}{g.product_name&&<p className="t-cap">{g.product_name}</p>}<h3>{g.ask_text}</h3><p><b>为什么重要：</b>{g.impact}</p><div className="ds-tags">{g.source_refs.map(id=><SourceTag key={id} id={id}/>)}</div></article>)}</div>{gaps.length>limit&&!all&&<button className="btn" onClick={()=>setAll(true)}>展开其余 {gaps.length-limit} 项</button>}</>;
++}
++export function SupplierDossiers() {
++  const {id}=useParams();
++  return id?<SupplierView id={id}/>:<SupplierCards/>;
++}
++function SupplierCards() {
++  const {params,set}=useFilters(),q=params.get("q")||"",type=params.get("type")||"";
++  const list=useQuery({queryKey:["dossier-suppliers",q,type],queryFn:()=>read<{items:Supplier[];total:number}>(`/suppliers${qs({q,type})}`),retry:false});
++  return <div className="ds-page"><Heading title="供应商档案" text="先选一家，核对它能供什么、报价条件和还缺的资料。"/><div className="ds-toolbar"><SearchField label="搜索供应商档案" placeholder="搜索供应商、主营品类" value={q} onSearch={v=>set("q",v)}/><Pick label="供应商类型" value={type} onChange={v=>set("type",v)} options={[{value:"",label:"全部类型"},...['产品','物流','配套'].map(v=>({value:v,label:v}))]}/><Link to="/suppliers">旧供应商资料与往来单位</Link></div>
++    {list.isLoading&&<Skeleton/>}{list.isError&&<Failure error={list.error} retry={()=>list.refetch()}/>}{list.data&&<><p className="t-foot">{list.data.total} 家供应商 · 有价 / 缺价按配置统计，报价可用性请打开核对</p><div className="ds-card-grid">{list.data.items.map(s=><Link key={s.supplier_id} className="ds-supplier-card" to={`/supplier-dossiers/${s.supplier_id}`}><div className="ds-card-title"><span className="ds-factory"><Factory size={22}/></span><Chip tone="plain">{s.supplier_type}供应商</Chip></div><h2>{s.name}</h2><p className="ds-categories">{s.categories.join(" · ")||"主营品类待补"}</p><dl className="ds-stats"><div><dt>产品族</dt><dd>{s.family_count}</dd></div><div><dt>有价配置</dt><dd>{s.priced_count}</dd></div><div><dt>缺价配置</dt><dd>{s.unpriced_count}</dd></div></dl><div className="ds-card-bottom"><span>最新报价 {known(s.latest_quote)}</span><span className="ds-gap-count">缺资料 {s.gap_count} 项 <ArrowRight size={14}/></span></div></Link>)}</div>{!list.data.total&&<Empty title="没有符合条件的供应商">调整类型或搜索词后重试。</Empty>}</>}</div>;
++}
++function SupplierView({id}: {id:string}) {
++  const q=useQuery({queryKey:["dossier-supplier",id],queryFn:()=>read<SupplierDetail>(`/suppliers/${encodeURIComponent(id)}`),retry:false});
++  return <div className="ds-page"><Heading title={q.data?.name||"供应商档案"} text="先看配置与报价，点来源核实，再把缺资料合成问话草稿。"/><Link className="btn sm" to="/supplier-dossiers">返回供应商档案</Link>{q.isLoading&&<Skeleton/>}{q.isError&&<Failure error={q.error} retry={()=>q.refetch()}/>}{q.data&&<><div className="ds-detail-top"><div><Chip>{q.data.supplier_type}供应商</Chip><p>{q.data.categories.join(" · ")}</p></div><Link className="btn primary" to={`/dossier-gaps?supplier=${id}`}>补资料 / 生成问话草稿</Link></div><aside className="ds-note"><b>可靠性备注</b><p>{q.data.reliability_notes||"尚无可靠性备注，使用前请核对来源。"}</p><EvidenceTags items={q.data.evidence}/></aside><h2>产品族与配置 <span className="t-cap">{q.data.products.length} 个配置</span></h2>
++      <div className="ds-table-wrap" tabIndex={0} aria-label="供应商配置与报价"><table className="ds-table"><thead><tr><th>产品与配置</th><th>报价 / 条件 / 来源</th><th>缺资料</th></tr></thead><tbody>{q.data.products.map(p=><tr key={p.product_id}><td><Config item={p}/></td><td>{p.offers.length?p.offers.map(o=><Quote key={o.offer_id} offer={o}/>):<span className="ds-unquoted">未报价</span>}</td><td><Link to={`/dossier-gaps?supplier=${id}`}>{p.gaps.length} 项待补</Link></td></tr>)}</tbody></table></div>
++      {q.data.other_offers.length>0&&<section><h2>运费、费用与尚未关联配置的报价</h2><div className="ds-card-grid">{q.data.other_offers.map(o=><Quote key={o.offer_id} offer={o}/>)}</div></section>}<h2>缺资料清单 <span className="t-cap">{q.data.gaps.length} 项</span></h2><GapCards gaps={q.data.gaps} limit={6}/></>}</div>;
++}
++export function ProductDossiers() {
++  const {id}=useParams();
++  return id?<FamilyView id={id}/>:<FamilyCards/>;
++}
++function FamilyCards() {
++  const {params,set}=useFilters(),q=params.get("q")||"",category=params.get("category")||"",page=Math.max(1,Number(params.get("page"))||1);
++  const list=useQuery({queryKey:["dossier-families",q,category],queryFn:()=>read<{items:Family[];total:number;categories:string[]}>(`/families${qs({q,category})}`),retry:false});
++  const rows=list.data?.items.slice((page-1)*24,page*24)||[];
++  return <div className="ds-page"><Heading title="产品档案" text="按品类找产品，打开同款配置，逐家对照价格、条件和出处。"/><div className="ds-toolbar"><SearchField label="搜索产品档案" placeholder="搜索名称、型号、配置" value={q} onSearch={v=>set("q",v)}/><Pick label="产品品类" value={category} onChange={v=>set("category",v)} options={[{value:"",label:"全部品类"},...(list.data?.categories||[]).map(v=>({value:v,label:v}))]}/><Link to="/products">旧产品候选与核准工具</Link></div><p className="ds-note">仅有同款证据的配置才共用一行。币种、税制、数量条件未知时，价格仅供逐条核对。</p>{list.isLoading&&<Skeleton/>}{list.isError&&<Failure error={list.error} retry={()=>list.refetch()}/>}{list.data&&<>{[...new Set(rows.map(r=>r.category))].map(cat=><section key={cat}><h2>{cat||"品类待补"}</h2><div className="ds-card-grid">{rows.filter(r=>r.category===cat).map(f=><Link className="ds-product-card" to={`/product-dossiers/${f.family_key}`} key={f.family_key}><Thumbnail id={f.thumbnail_source_id}/><div className="ds-product-copy"><h3>{f.display_name}</h3><p>{f.configuration_count} 个配置 · {f.supplier_ids.length} 家供应商</p>{f.states.some(s=>s!=="原文明确")&&<Chip tone="orange">含待核实资料</Chip>}<p className="t-cap">缺资料 {f.gap_count} 项</p><span className="ds-next">查看配置与价格 <ArrowRight size={14}/></span></div></Link>)}</div></section>)}{!list.data.total&&<Empty title="没有符合条件的产品">换个品类或搜索词。</Empty>}<Pager page={page} total={list.data.total} size={24} set={v=>set("page",String(v))}/></>}</div>;
++}
++function Pager({page,total,size,set}: {page:number;total:number;size:number;set:(v:number)=>void}) {return <div className="pager"><button className="btn sm" disabled={page<=1} onClick={()=>set(page-1)}>上一页</button><span>{page} / {Math.max(1,Math.ceil(total/size))} · 共 {total} 项</span><button className="btn sm" disabled={page*size>=total} onClick={()=>set(page+1)}>下一页</button></div>;}
++function FamilyView({id}: {id:string}) {
++  const q=useQuery({queryKey:["dossier-family",id],queryFn:()=>read<FamilyDetail>(`/families/${encodeURIComponent(id)}`),retry:false});
++  return <div className="ds-page"><Heading title={q.data?.display_name||"产品档案"} text="同一配置一行，每家报价一列。展开条件后再判断是否可比。"/><Link className="btn sm" to="/product-dossiers">返回产品档案</Link>{q.isLoading&&<Skeleton/>}{q.isError&&<Failure error={q.error} retry={()=>q.refetch()}/>}{q.data&&<><p className="ds-note">{q.data.category} · {q.data.configurations.length} 个配置 · {q.data.suppliers.length} 家供应商。未关联该配置的供应商显示“未确认供货”；历史报价不代表当前可下单。</p><div className="ds-table-wrap ds-comparison" tabIndex={0} aria-label="跨供应商配置价格对比"><table className="ds-table"><thead><tr><th>标准配置 / 待核实项</th>{q.data.suppliers.map(s=><th key={s.supplier_id}><Link to={`/supplier-dossiers/${s.supplier_id}`}>{s.name}</Link></th>)}</tr></thead><tbody>{q.data.configurations.map(p=><tr key={p.product_id}><td><Config item={p}/></td>{q.data.suppliers.map(s=><td key={s.supplier_id} data-supplier={s.supplier_id}><div className="ds-mobile-label">{s.name}</div>{p.offers.filter(o=>o.supplier_id===s.supplier_id).length?p.offers.filter(o=>o.supplier_id===s.supplier_id).map(o=><Quote key={o.offer_id} offer={o}/>):<p className="ds-unquoted">{p.suppliers.some(x=>x.supplier_id===s.supplier_id)?"未报价":"未确认供货"}</p>}</td>)}</tr>)}</tbody></table></div><h2>冲突与待补资料</h2><GapCards gaps={q.data.configurations.flatMap(p=>p.gaps)} limit={6}/></>}</div>;
++}
++function DraftPanel({supplier,priority,type}: {supplier:string;priority:string;type:string}) {
++  const q=useQuery({queryKey:["dossier-drafts",supplier],queryFn:()=>read<{items:QuestionDraft[]}>(`/suppliers/${encodeURIComponent(supplier)}/drafts`),retry:false});
++  const [saved,setSaved]=useState<QuestionDraft|null>(null),[notice,setNotice]=useState("");
++  const mutation=useMutation({mutationFn:()=>postForm<QuestionDraft>(API+`/suppliers/${encodeURIComponent(supplier)}/drafts`,{priority,type}),onSuccess:d=>{setSaved(d);void q.refetch();setNotice("草稿已存档，未发送。");}});
++  return <aside className="ds-draft-panel"><div><h2>向这家供应商补资料</h2><p>合并当前供应商、优先级和类型筛选下的全部缺口（包含其余分页），存为一条问话草稿。</p></div><button className="btn primary" disabled={mutation.isPending} onClick={()=>mutation.mutate()}>{mutation.isPending?"正在存档…":"生成问话草稿"}</button>{mutation.isError&&<p role="alert">{mutation.error.message}，请重试。</p>}<p role="status">{notice}</p>{saved&&<div className="ds-draft-result"><label htmlFor="ds-draft-text">已存档问话草稿 · {JSON.parse(saved.gap_ids_json).length} 项缺口</label><textarea id="ds-draft-text" rows={10} readOnly value={saved.text}/><button className="btn sm" onClick={async()=>setNotice(await copyText(saved.text)?"已复制草稿，未发送。":"复制失败，请手动选择文字。")}>复制草稿</button></div>}<details><summary>查看已存档草稿</summary>{q.isLoading&&<Skeleton/>}{q.isError&&<Failure error={q.error} retry={()=>q.refetch()}/>}{q.data?.items.length===0&&<p>尚无存档草稿。</p>}{q.data?.items.map(d=><details className="ds-archive-draft" key={d.draft_id}><summary>{new Date(d.created_at).toLocaleString("zh-CN")} · {JSON.parse(d.gap_ids_json).length} 项 · 未发送</summary><pre>{d.text}</pre></details>)}</details></aside>;
++}
++export function DossierGaps() {
++  const {params,set}=useFilters(),supplier=params.get("supplier")||"",priority=params.get("priority")||"",type=params.get("type")||"",page=Math.max(1,Number(params.get("page"))||1);
++  const suppliers=useQuery({queryKey:["dossier-suppliers","",""],queryFn:()=>read<{items:Supplier[]}>("/suppliers"),retry:false});
++  const q=useQuery({queryKey:["dossier-gaps",supplier,priority,type,page],queryFn:()=>read<{items:Gap[];total:number;types:string[];priorities:number[]}>(`/gaps${qs({supplier,priority,type,page,page_size:30})}`),retry:false});
++  return <div className="ds-page"><Heading title="缺资料" text="看清该问哪家、要什么、为什么重要；选一家生成问话草稿。"/><div className="ds-toolbar"><Pick label="该问哪家" value={supplier} onChange={v=>set("supplier",v)} options={[{value:"",label:"全部供应商"},...(suppliers.data?.items||[]).map(s=>({value:s.supplier_id,label:s.name}))]}/><Pick label="缺口优先级" value={priority} onChange={v=>set("priority",v)} options={[{value:"",label:"全部优先级"},...(q.data?.priorities||[]).map(p=>({value:String(p),label:`优先级 ${p}`}))]}/><Pick label="缺口类型" value={type} onChange={v=>set("type",v)} options={[{value:"",label:"全部缺口类型"},...(q.data?.types||[]).map(t=>({value:t,label:gapTypes[t]||t}))]}/></div>{suppliers.isError&&<Failure error={suppliers.error} retry={()=>suppliers.refetch()}/>}{supplier?<DraftPanel key={`${supplier}:${priority}:${type}`} supplier={supplier} priority={priority} type={type}/>:<div className="ds-note"><Package size={20}/> 先按“该问哪家”选一家，即可合并缺口、生成并存档问话草稿。</div>}{q.isLoading&&<Skeleton/>}{q.isError&&<Failure error={q.error} retry={()=>q.refetch()}/>}{q.data&&<><p className="t-foot">当前筛选 {q.data.total} 项 · 优先级数字越小越先问</p><GapCards gaps={q.data.items}/>{!q.data.total&&<Empty title="当前筛选没有缺资料项">可调整供应商或筛选条件。</Empty>}<Pager page={page} total={q.data.total} size={30} set={v=>set("page",String(v))}/></>}</div>;
++}
+--- a/web/src/pages/Products.tsx
++++ b/web/src/pages/Products.tsx
+@@ -1,4 +1,5 @@
+ import { PageIntro } from "./overview/PageIntro";
++import { Link } from "react-router";
+ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+ import { Plus } from "lucide-react";
+ import { useEffect, useState } from "react";
+@@ -164,6 +165,7 @@
+         </div>
+       </div>
+       <PageIntro page="products" />
++      <p className="callout">这里核准旧产品候选。<Link to="/product-dossiers">查看带来源的产品档案与跨供应商配置对比</Link></p>
+       <div className="toolbar">
+         <Segmented label="产品状态" value={status} onChange={(value) => set({ status: value })}
+           options={[{ value: "candidate", label: "待确认", count: c?.candidate }, { value: "confirmed", label: "已确认", count: c?.confirmed }, { value: "hidden", label: "已隐藏", count: c?.hidden }]} />
+--- a/web/src/pages/Suppliers.tsx
++++ b/web/src/pages/Suppliers.tsx
+@@ -1,5 +1,6 @@
+ import { PartiesWorkbench } from "../ui/PartiesWorkbench";
++import { Link } from "react-router";
+ 
+ export function Suppliers() {
+-  return <PartiesWorkbench initialKind="supplier" />;
++  return <><p className="callout">这里维护往来单位与联系关系。<Link to="/supplier-dossiers">查看带来源的供应商档案、配置与报价</Link></p><PartiesWorkbench initialKind="supplier" /></>;
+ }
+--- /dev/null
++++ b/web/src/pages/overview/SupplierGapCard.tsx
+@@ -0,0 +1,7 @@
++import { Link } from "react-router";
++import "../Dossiers.css";
++
++export interface SupplierGapSummary { ready: boolean; total: number | null; items: {gap_id:string;supplier_name:string;ask_text:string;impact:string;priority:number;to:string}[] }
++export function SupplierGapCard({value}: {value?:SupplierGapSummary}) {
++  return <section className="ds-queue-card" aria-label="供应商缺资料"><h3>供应商缺资料</h3>{!value?.ready?<p>缺资料清单暂时读不到，请打开档案核对。</p>:<><p>还有 {value.total} 项缺口，先看优先级最高的 {value.items.length} 项。</p><ol>{value.items.map(g=><li key={g.gap_id}><Link to={g.to}><b>{g.supplier_name}</b> · {g.ask_text}</Link></li>)}</ol></>}<Link className="btn sm" to="/dossier-gaps">查看缺资料 / 生成问话草稿</Link></section>;
++}
+--- a/web/src/pages/overview/TodayQueue.tsx
++++ b/web/src/pages/overview/TodayQueue.tsx
+@@ -1,3 +1,4 @@
++import { SupplierGapCard } from "./SupplierGapCard";
+ import { useQuery } from "@tanstack/react-query";
+ import { useEffect } from "react";
+ import { Link } from "react-router";
+@@ -22,6 +23,7 @@
+     <header className="queue-heading"><div><h2 id="today-queue-title" className="t-headline">今天要做的事</h2><p>先看最紧急的，点右边按钮去处理，回来刷新看剩余待办。</p></div>
+       <button type="button" className="btn" disabled={q.isFetching} onClick={() => q.refetch()}>{q.isFetching ? "正在更新待办…" : "更新待办"}</button></header>
+     <p className="t-foot">已处理和稍后仅记在这台设备；收款仍须到案子核对到账。新进展会重新提醒。</p>
++    <SupplierGapCard value={q.data?.supplier_dossiers} />
+     {q.isLoading && <Skeleton lines={3} />}
+     {q.isError && <div role="alert" className="callout"><b>待办暂时读不到</b><p>请点“更新待办”重试，也可以直接去<Link to="/inbox">商机沟通</Link>或<Link to="/deals">案子</Link>核对。{q.data && " 下方保留上次结果，请核对后再处理。"}</p></div>}
+     {q.data && !q.data.complete && <div className="callout" role="note"><b>还有待办未核对齐</b>{q.data.unavailable.map((text) => <p key={text}>{text}</p>)}<Link to="/system/pipeline">查看消息与资料检查</Link></div>}

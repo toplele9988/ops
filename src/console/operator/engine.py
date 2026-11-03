@@ -240,6 +240,8 @@ class Operator:
             if not row:
                 raise Missing('未找到这条运营动作')
             action = self.store.action(row)
+            if action['data'].get('rehearsal_only'):
+                return action
             if action['state'] in TERMINAL or action['state'] == 'blocked':
                 return action
             event = json.loads(db.execute('SELECT payload FROM operator_events WHERE id=?', (action['event_id'],)).fetchone()[0])
@@ -334,12 +336,27 @@ class Operator:
             return self.store.action(db.execute('SELECT * FROM operator_actions WHERE id=?', (action_id,)).fetchone())
 
     def tick(self):
-        for event in self.source.due_events(self.clock()):
-            self.handle(event)
+        try:
+            events = self.source.due_events(self.clock())
+            self.store.health('tick.sources', self.clock())
+        except Exception as error:
+            self.store.health('tick.sources', self.clock(), error)
+            events = []
+        for event in events:
+            try:
+                self.handle(event)
+            except Exception as error:
+                self.store.health('tick.event', self.clock(), error)
         with self.store.write() as db:
             ids = [r[0] for r in db.execute("SELECT id FROM operator_actions WHERE state IN ('ready','scheduled','sending') "
                    'AND (due_at IS NULL OR due_at<=?) ORDER BY id LIMIT 100', (self.clock(),))]
-        return [self.dispatch(i) for i in ids]
+        result = []
+        for i in ids:
+            try:
+                result.append(self.dispatch(i))
+            except Exception as error:
+                self.store.health('tick.dispatch', self.clock(), error)
+        return result
 
     def read(self):
         from .store import DEFAULTS
@@ -352,8 +369,12 @@ class Operator:
                 "OR id IN (SELECT id FROM operator_actions ORDER BY id DESC LIMIT 200) ORDER BY id DESC")]
             decisions = [dict(r, data=json.loads(r['data'])) for r in db.execute('SELECT * FROM operator_decisions ORDER BY id DESC LIMIT 100')]
             events = [dict(r) for r in db.execute("SELECT id,state,created_at FROM operator_events WHERE state!='complete'")]
+            from .rehearsal import preview
+            for action in actions:
+                action['rehearsal'] = preview(db, action, self.clock(), self.profiles_in(db))
+            health = [dict(r) for r in db.execute('SELECT * FROM operator_health ORDER BY component')]
             return dict(settings=self.store.settings(db), profiles=self.profiles_in(db), actions=actions,
-                        decisions=decisions, unresolved_events=events, transport=self.bridge.name, types=list(TYPES))
+                        decisions=decisions, unresolved_events=events, transport=self.bridge.name, types=list(TYPES), health=health)
 
     @staticmethod
     def profiles_in(db):
@@ -428,6 +449,8 @@ class Operator:
                 if not row:
                     raise Missing('未找到这条运营动作')
                 action = self.store.action(row)
+                if action['data'].get('rehearsal_only') and operation != 'reject':
+                    raise Conflict('档案缺口仅供演练，核对档案与联系人后重新起草')
                 if action['state'] in TERMINAL or action['state'] == 'sending':
                     raise Conflict('动作已处理或结果待核对，不能再次发送')
                 if operation == 'edit' and db.execute('SELECT 1 FROM operator_attempts WHERE action_id=?', (row_id,)).fetchone():

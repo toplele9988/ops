@@ -26,6 +26,9 @@ export interface NavItem {
 }
 
 const PAGES: NavItem[] = [
+  { key: "supplier-dossiers", label: "供应商档案", path: "/supplier-dossiers", kind: "live", area: "front", group: "产品与供应商", icon: Factory },
+  { key: "product-dossiers", label: "产品档案", path: "/product-dossiers", kind: "live", area: "front", group: "产品与供应商", icon: Boxes },
+  { key: "dossier-gaps", label: "缺资料", path: "/dossier-gaps", kind: "live", area: "front", group: "产品与供应商", icon: ClipboardCheck },
   { key: "overview", label: "总览", path: "/", kind: "live", area: "front", group: "日常工作", icon: LayoutDashboard },
   { key: "guide", label: "怎么用", path: "/guide", kind: "live", area: "front", group: "日常工作", icon: BookOpenText },
   { key: "workbench", label: "工作台", path: "/workbench", kind: "live", area: "front", group: "日常工作", icon: Home },
@@ -45,6 +48,7 @@ const PAGES: NavItem[] = [
   { key: "prices", label: "价格建议", path: "/prices", kind: "live", area: "back", group: "整理工具", icon: Tags },
   { key: "packing", label: "供应商包装核对", path: "/packing", kind: "live", area: "back", group: "整理工具", icon: PackageSearch },
   { key: "roles", label: "AI 员工", path: "/roles", kind: "live", area: "front", group: "学习与改进", icon: Bot },
+  { key: "operator", label: "AI 运营员", path: "/operator", kind: "live", area: "front", group: "日常工作", icon: Bot },
   { key: "inspiration", label: "AI 开发灵感库", path: "/inspiration", kind: "live", area: "front", group: "学习与改进", icon: Lightbulb },
   { key: "requirements", label: "需求与验收", path: "/requirements", kind: "live", area: "back", group: "整理工具", icon: ClipboardCheck },
   {
@@ -85,7 +89,8 @@ const PAGES: NavItem[] = [
 
 // Fixed business order; hidden pages never become navigation by registering a route.
 const ORDER = [
-  "overview", "inbox", "deals", "customers", "suppliers", "products", "fulfil", "search", "roles",
+  "overview", "inbox", "deals", "customers", "supplier-dossiers", "product-dossiers", "dossier-gaps",
+  "fulfil", "search", "roles", "operator",
   "channels", "pipeline", "alibaba-open", "knowledge", "language", "admin",
   "triage", "classification-review", "directory", "audit", "freight", "prices", "packing", "requirements",
 ];

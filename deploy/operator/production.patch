@@ -1,0 +1,96 @@
+--- a/console/v3.py
++++ b/console/v3.py
+@@ -50,4 +50,6 @@
+     routes += v3_quotes_api.build(app_module)
+     routes += v3_roles_api.build(app_module)
++    from .operator import host as operator_host
++    routes += operator_host.build(app_module)
+     routes += v3_whatsapp_login_api.build(app_module)
+     routes += v3_directory_api.build(app_module)
+--- a/console/app.py
++++ b/console/app.py
+@@ -936,4 +936,6 @@
+ application = Starlette(debug=False, routes=routes,
+                         exception_handlers={HTTPException: http_error, 500: server_error})
++from .operator.host import attach_lifecycle as attach_operator_lifecycle
++attach_operator_lifecycle(application, sys.modules[__name__])
+ from .password_candidate.runtime import build as build_password_console
+ app = build_password_console(SecurityMiddleware(application), STORE, auth)
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -23,4 +23,5 @@
+ import { Guide } from "./pages/Guide";
+ import { RolesPage } from "./pages/Roles";
++import { Operator } from "./pages/Operator";
+ import { TriagePage } from "./pages/Triage";
+ import { Products } from "./pages/Products";
+@@ -57,4 +58,5 @@
+               <Route path="triage" element={<TriagePage />} />
+               <Route path="roles" element={<RolesPage />} />
++              <Route path="operator" element={<Operator />} />
+               <Route path="deals" element={<Deals />} />
+               <Route path="deals/:id" element={<DealPage />} />
+--- a/web/src/nav.ts
++++ b/web/src/nav.ts
+@@ -46,4 +46,5 @@
+   { key: "packing", label: "供应商包装核对", path: "/packing", kind: "live", area: "back", group: "整理工具", icon: PackageSearch },
+   { key: "roles", label: "AI 员工", path: "/roles", kind: "live", area: "front", group: "学习与改进", icon: Bot },
++  { key: "operator", label: "AI 运营员", path: "/operator", kind: "live", area: "front", group: "日常工作", icon: Bot },
+   { key: "inspiration", label: "AI 开发灵感库", path: "/inspiration", kind: "live", area: "front", group: "学习与改进", icon: Lightbulb },
+   { key: "requirements", label: "需求与验收", path: "/requirements", kind: "live", area: "back", group: "整理工具", icon: ClipboardCheck },
+@@ -87,4 +88,5 @@
+ const ORDER = [
+   "overview", "inbox", "deals", "customers", "suppliers", "products", "fulfil", "search", "roles",
++  "operator",
+   "channels", "pipeline", "alibaba-open", "knowledge", "language", "admin",
+   "triage", "classification-review", "directory", "audit", "freight", "prices", "packing", "requirements",
+--- a/web/src/pages/Operator.tsx
++++ b/web/src/pages/Operator.tsx
+@@ -4,4 +4,5 @@
+ import { get, postForm } from '../api';
+ import { type Action, type Profile, type Snapshot, kinds, states, typeNames, reasons, beijing } from './operator/types';
++import { Rehearsal } from './operator/Rehearsal';
+ import './operator/operator.css';
+ 
+@@ -48,6 +49,6 @@
+       <div className="operator-actions">
+         {review && <>
+-          <button className="btn primary" disabled={busy || !data?.settings.enabled || data.settings.dry_run || ['blocked','sending'].includes(a.state) || ['confirm_payment','ask_owner'].includes(a.kind)} onClick={() => setConfirming(a)}>确认{a.data.parts.length ? '发送' : '执行'}</button>
+-          <button className="btn" disabled={busy || a.state === 'sending' || !a.data.parts.length} onClick={() => { setEditor(a); setText(a.data.parts.join('\n\n')); }}>修改</button>
++          <button className="btn primary" disabled={busy || a.data.rehearsal_only || !data?.settings.enabled || data.settings.dry_run || ['blocked','sending'].includes(a.state) || ['confirm_payment','ask_owner'].includes(a.kind)} onClick={() => setConfirming(a)}>确认{a.data.parts.length ? '发送' : '执行'}</button>
++          <button className="btn" disabled={busy || a.data.rehearsal_only || a.state === 'sending' || !a.data.parts.length} onClick={() => { setEditor(a); setText(a.data.parts.join('\n\n')); }}>修改</button>
+           <button className="btn" disabled={busy || a.state === 'sending'} onClick={() => { setRejecting(a); setReason(''); }}>拒绝</button>
+         </>}
+@@ -70,4 +71,6 @@
+         <p className="t-sub">{data.transport === 'fake' ? '当前使用假发送桥，确认后只记录模拟结果。' : '每次发送都会复查授权与资料。'} 停用后所有待发动作暂停，已开始的发送请核对结果。历史演练草稿须逐条确认。</p>
+       </section>
++      <Rehearsal actions={data.actions} />
++      {data.health?.some(h => !h.ok) && <div role="alert">部分事件来源或定时任务读取失败，后台会继续处理其他来源。请核对：{data.health.filter(h => !h.ok).map(h => `${h.component}（${beijing(h.at)}）`).join('、')}。</div>}
+       <section className="operator-section" aria-label="自动授权矩阵"><h2>自动授权矩阵</h2><p>只有等级、往来单位类型、联系人三处都打开才会自动执行。收款始终由你到案子页确认。</p>
+         <div className="operator-levels">{levels.map(level => <div key={level}>{toggle('levels', String(level), `第 ${level} 级`, data.settings.levels[String(level)] === true)}<p>{level === 1 ? '供应商与货代：资料、问价、运费、交期' : level === 2 ? '客户：已核实资料与常规跟进' : '报价、PI、订单、发货与案子操作'}</p></div>)}</div>
+@@ -75,5 +78,5 @@
+         <h3>按联系人授权</h3>
+         {Object.keys(contacts).length === 0 && <p>新询盘归属确认后，联系人会出现在这里。<Link to="/inbox">去商机沟通</Link></p>}
+-        {Object.entries(contacts).map(([key,p]) => <div className="operator-contact" key={key}><strong>{p.name ?? '联系人'} · {typeNames[p.type] ?? p.type}</strong><div className="operator-actions">{levels.map(l => <span key={l}>{toggle('contacts', `${l}:${key}`, `${p.name ?? '联系人'} 第 ${l} 级`, data.settings.contacts[`${l}:${key}`] === true)}</span>)}<button className="btn" disabled={busy} onClick={() => editProfile(key)}>核对 {p.name ?? '联系人'} 的时间与语言</button></div><p className="t-sub">每小时 {p.hourly_limit ?? 6} 段 / 每天 {p.daily_limit ?? 20} 段 · 间隔至少 {p.interval_seconds ?? 30} 秒 · 时区 {p.timezone ?? '待核对'}</p></div>)}
++        {Object.entries(contacts).map(([key,p]) => <div className="operator-contact" key={key}><strong>{p.name ?? '联系人'} · {typeNames[p.type] ?? p.type}</strong><div className="operator-actions">{levels.map(l => <span key={l}>{toggle('contacts', `${l}:${key}`, `${p.name ?? '联系人'} 第 ${l} 级`, data.settings.contacts[`${l}:${key}`] === true)}</span>)}<button className="btn" disabled={busy || key.startsWith('dossier:')} onClick={() => editProfile(key)}>核对 {p.name ?? '联系人'} 的时间与语言</button></div><p className="t-sub">每小时 {p.hourly_limit ?? 6} 段 / 每天 {p.daily_limit ?? 20} 段 · 间隔至少 {p.interval_seconds ?? 30} 秒 · 时区 {p.timezone ?? '待核对'}</p></div>)}
+       </section>
+       <section className="operator-section"><h2>AI 待你确认 <span className="operator-badge">{waiting.length}</span></h2>{waiting.length ? waiting.map(a => actionCard(a, true)) : <p>待办已处理。新消息到达后会自动起草。<button className="btn" onClick={() => void query.refetch()}>检查新草稿</button></p>}</section>
+--- a/web/src/pages/operator/operator.css
++++ b/web/src/pages/operator/operator.css
+@@ -30,2 +30,5 @@
+ .operator-page .danger { color: #a52b31; border-color: #dbaeb0; margin: 12px; }
+ @media (max-width: 600px) { .operator-section { padding: 14px; } .operator-card { padding: 12px; } .operator-page th, .operator-page td { padding: 8px 5px; } .operator-page .page-head { flex-wrap: wrap; } .operator-levels > div { min-width: 100%; box-sizing: border-box; } }
++
++.operator-timeline { display: grid; gap: 1rem; border-left: 2px solid #c6d6dc; padding-left: 1rem; }
++.operator-timeline li { overflow-wrap: anywhere; }
+--- a/web/src/pages/operator/types.ts
++++ b/web/src/pages/operator/types.ts
+@@ -27,6 +27,6 @@
+ export type Profile = { type: string; timezone?: string; language?: string; tone?: string; hourly_limit?: number; daily_limit?: number; interval_seconds?: number; name?: string; channel?: string };
+ export type Settings = { enabled: boolean; dry_run: boolean; levels: Record<string, boolean>; types: Record<string, boolean>; contacts: Record<string, boolean> };
+-export type Action = { id: number; event_id: string; kind: string; contact_key: string; level: number; state: string; reason: string; due_at: number | null; created_at: number; data: { parts: string[]; fact_ids: string[]; payload?: Record<string, unknown>; context?: { contacts?: Record<string, Profile>; deal?: { id: number; title: string } } } };
++export type Action = { id: number; event_id: string; kind: string; contact_key: string; level: number; state: string; reason: string; due_at: number | null; created_at: number; dry_run?: number; rehearsal?: { who: string; type: string; trigger: string; why: string; sources: { label: string; ref: string; conversation_key?: string; at?: string }[]; would_send_at: number | null; timing_reason: string }; data: { rehearsal_only?: boolean; parts: string[]; fact_ids: string[]; payload?: Record<string, unknown>; context?: { contacts?: Record<string, Profile>; deal?: { id: number; title: string } } } };
+ export type Decision = { id: number; event_id: string | null; action_id: number | null; at: number; phase: string; data: unknown };
+-export type Snapshot = { settings: Settings; profiles: Record<string, Profile>; actions: Action[]; decisions: Decision[]; types: string[]; transport: string; unresolved_events: { id: string; state: string }[] };
++export type Snapshot = { settings: Settings; profiles: Record<string, Profile>; actions: Action[]; decisions: Decision[]; types: string[]; transport: string; health?: {component: string; ok: number; at: number; error_type?: string; failures: number}[]; unresolved_events: { id: string; state: string }[] };
+ export const beijing = (at: number) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'medium' }).format(at * 1000);

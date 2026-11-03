@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { get, postForm } from '../api';
 import { type Action, type Profile, type Snapshot, kinds, states, typeNames, reasons, beijing } from './operator/types';
+import { Rehearsal } from './operator/Rehearsal';
 import './operator/operator.css';
 
 const levels = [1, 2, 3];
@@ -47,8 +48,8 @@ export function Operator() {
       {contact?.timezone && <p className="t-sub">对方时区：{contact.timezone} · 语言：{contact.language ?? '待核对'} · 语气：{contact.tone === 'friendly' ? '亲切' : '专业'}</p>}
       <div className="operator-actions">
         {review && <>
-          <button className="btn primary" disabled={busy || !data?.settings.enabled || data.settings.dry_run || ['blocked','sending'].includes(a.state) || ['confirm_payment','ask_owner'].includes(a.kind)} onClick={() => setConfirming(a)}>确认{a.data.parts.length ? '发送' : '执行'}</button>
-          <button className="btn" disabled={busy || a.state === 'sending' || !a.data.parts.length} onClick={() => { setEditor(a); setText(a.data.parts.join('\n\n')); }}>修改</button>
+          <button className="btn primary" disabled={busy || a.data.rehearsal_only || !data?.settings.enabled || data.settings.dry_run || ['blocked','sending'].includes(a.state) || ['confirm_payment','ask_owner'].includes(a.kind)} onClick={() => setConfirming(a)}>确认{a.data.parts.length ? '发送' : '执行'}</button>
+          <button className="btn" disabled={busy || a.data.rehearsal_only || a.state === 'sending' || !a.data.parts.length} onClick={() => { setEditor(a); setText(a.data.parts.join('\n\n')); }}>修改</button>
           <button className="btn" disabled={busy || a.state === 'sending'} onClick={() => { setRejecting(a); setReason(''); }}>拒绝</button>
         </>}
         {a.data.context?.deal?.id && <Link className="btn" to={`/deals/${a.data.context.deal.id}`}>查看案子</Link>}
@@ -69,12 +70,14 @@ export function Operator() {
         <button className="btn danger" disabled={mutation.isPending || !data.settings.enabled} onClick={() => change('master', 'enabled', false)}>一键全停</button>
         <p className="t-sub">{data.transport === 'fake' ? '当前使用假发送桥，确认后只记录模拟结果。' : '每次发送都会复查授权与资料。'} 停用后所有待发动作暂停，已开始的发送请核对结果。历史演练草稿须逐条确认。</p>
       </section>
+      <Rehearsal actions={data.actions} />
+      {data.health?.some(h => !h.ok) && <div role="alert">部分事件来源或定时任务读取失败，后台会继续处理其他来源。请核对：{data.health.filter(h => !h.ok).map(h => `${h.component}（${beijing(h.at)}）`).join('、')}。</div>}
       <section className="operator-section" aria-label="自动授权矩阵"><h2>自动授权矩阵</h2><p>只有等级、往来单位类型、联系人三处都打开才会自动执行。收款始终由你到案子页确认。</p>
         <div className="operator-levels">{levels.map(level => <div key={level}>{toggle('levels', String(level), `第 ${level} 级`, data.settings.levels[String(level)] === true)}<p>{level === 1 ? '供应商与货代：资料、问价、运费、交期' : level === 2 ? '客户：已核实资料与常规跟进' : '报价、PI、订单、发货与案子操作'}</p></div>)}</div>
         <div className="operator-table-wrap"><table><caption>按往来单位类型授权</caption><thead><tr><th>往来单位</th>{levels.map(l => <th key={l}>第 {l} 级</th>)}</tr></thead><tbody>{data.types.map(type => <tr key={type}><th scope="row">{typeNames[type] ?? type}</th>{levels.map(l => <td key={l}>{toggle('types', `${l}:${type}`, `${typeNames[type] ?? type} 第 ${l} 级`, data.settings.types[`${l}:${type}`] === true)}</td>)}</tr>)}</tbody></table></div>
         <h3>按联系人授权</h3>
         {Object.keys(contacts).length === 0 && <p>新询盘归属确认后，联系人会出现在这里。<Link to="/inbox">去商机沟通</Link></p>}
-        {Object.entries(contacts).map(([key,p]) => <div className="operator-contact" key={key}><strong>{p.name ?? '联系人'} · {typeNames[p.type] ?? p.type}</strong><div className="operator-actions">{levels.map(l => <span key={l}>{toggle('contacts', `${l}:${key}`, `${p.name ?? '联系人'} 第 ${l} 级`, data.settings.contacts[`${l}:${key}`] === true)}</span>)}<button className="btn" disabled={busy} onClick={() => editProfile(key)}>核对 {p.name ?? '联系人'} 的时间与语言</button></div><p className="t-sub">每小时 {p.hourly_limit ?? 6} 段 / 每天 {p.daily_limit ?? 20} 段 · 间隔至少 {p.interval_seconds ?? 30} 秒 · 时区 {p.timezone ?? '待核对'}</p></div>)}
+        {Object.entries(contacts).map(([key,p]) => <div className="operator-contact" key={key}><strong>{p.name ?? '联系人'} · {typeNames[p.type] ?? p.type}</strong><div className="operator-actions">{levels.map(l => <span key={l}>{toggle('contacts', `${l}:${key}`, `${p.name ?? '联系人'} 第 ${l} 级`, data.settings.contacts[`${l}:${key}`] === true)}</span>)}<button className="btn" disabled={busy || key.startsWith('dossier:')} onClick={() => editProfile(key)}>核对 {p.name ?? '联系人'} 的时间与语言</button></div><p className="t-sub">每小时 {p.hourly_limit ?? 6} 段 / 每天 {p.daily_limit ?? 20} 段 · 间隔至少 {p.interval_seconds ?? 30} 秒 · 时区 {p.timezone ?? '待核对'}</p></div>)}
       </section>
       <section className="operator-section"><h2>AI 待你确认 <span className="operator-badge">{waiting.length}</span></h2>{waiting.length ? waiting.map(a => actionCard(a, true)) : <p>待办已处理。新消息到达后会自动起草。<button className="btn" onClick={() => void query.refetch()}>检查新草稿</button></p>}</section>
       <section className="operator-section"><h2>最近自动动作</h2>{data.actions.filter(a => finalStates.has(a.state)).length ? data.actions.filter(a => finalStates.has(a.state)).map(a => actionCard(a, false)) : <p>还没有已执行动作，先查看演练草稿并核对授权。</p>}</section>

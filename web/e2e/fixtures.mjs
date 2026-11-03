@@ -4,6 +4,7 @@ import { installInboxFixtures, createInboxState, conversationKey, supplierKey } 
 import { installPartiesFixtures } from './fixtures.parties.mjs';
 import { installDealFixtures } from './fixtures.deals.mjs';
 import { installQueueFixtures, queueResponse } from './fixtures.queue.mjs';
+import { installDossierFixtures } from './fixtures.dossiers.mjs';
 export { conversationKey, supplierKey };
 
 export async function installFixtures(page, problems = []) {
@@ -37,5 +38,13 @@ export async function installFixtures(page, problems = []) {
   });
   // Project current canonical party after every merge / undo without moving raw ownership.
   for (const conv of inbox.conversations) Object.defineProperty(conv, 'customer_name', { configurable: true, enumerable: true, get: () => parties.parties.find(p => p.id === canonical(conv.customer_party_id ?? 1))?.name ?? '', set: () => {} });
+  await installDossierFixtures(page);
+  // Minimal read-only AI operator snapshot (fictional): everything off, rehearsal only.
+  await page.route('**/api/v1/operator**', route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({ json: { settings: { enabled: false, dry_run: true, levels: {}, types: {}, contacts: {} }, profiles: {}, actions: [], decisions: [],
+      types: ['customer_project', 'customer_wholesale', 'customer_end', 'customer_other', 'supplier_product', 'supplier_logistics', 'supplier_support'],
+      transport: 'fake', health: [], unresolved_events: [] } });
+  });
   return { inbox, parties, deals, queue };
 }

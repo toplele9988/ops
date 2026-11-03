@@ -1,3 +1,4 @@
+import type { SupplierGapSummary } from "../pages/overview/SupplierGapCard";
 import { useEffect, useState } from "react";
 
 export interface QueueItem {
@@ -5,6 +6,7 @@ export interface QueueItem {
   to: string; action: string; priority: number; revision: string; due_on: string | null;
 }
 export interface QueueResponse {
+  supplier_dossiers?: SupplierGapSummary;
   generated_at: number; items: QueueItem[]; total: number; complete: boolean;
   unavailable: string[]; counts: Record<string, number>;
 }

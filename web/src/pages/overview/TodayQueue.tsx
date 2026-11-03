@@ -1,3 +1,4 @@
+import { SupplierGapCard } from "./SupplierGapCard";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Link } from "react-router";
@@ -22,6 +23,7 @@ export function TodayQueue() {
     <header className="queue-heading"><div><h2 id="today-queue-title" className="t-headline">今天要做的事</h2><p>先看最紧急的，点右边按钮去处理，回来刷新看剩余待办。</p></div>
       <button type="button" className="btn" disabled={q.isFetching} onClick={() => q.refetch()}>{q.isFetching ? "正在更新待办…" : "更新待办"}</button></header>
     <p className="t-foot">已处理和稍后仅记在这台设备；收款仍须到案子核对到账。新进展会重新提醒。</p>
+    <SupplierGapCard value={q.data?.supplier_dossiers} />
     {q.isLoading && <Skeleton lines={3} />}
     {q.isError && <div role="alert" className="callout"><b>待办暂时读不到</b><p>请点“更新待办”重试，也可以直接去<Link to="/inbox">商机沟通</Link>或<Link to="/deals">案子</Link>核对。{q.data && " 下方保留上次结果，请核对后再处理。"}</p></div>}
     {q.data && !q.data.complete && <div className="callout" role="note"><b>还有待办未核对齐</b>{q.data.unavailable.map((text) => <p key={text}>{text}</p>)}<Link to="/system/pipeline">查看消息与资料检查</Link></div>}

@@ -1,0 +1,6 @@
+console/dossiers/__init__.py
+console/dossiers/drafts.py
+console/dossiers/service.py
+console/dossiers/sources.py
+console/dossiers/store.py
+console/v3_dossiers_api.py

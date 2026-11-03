@@ -18,6 +18,13 @@ DEFAULTS = dict(enabled=False, dry_run=True, levels={}, types={}, contacts={})
 TYPES = ('customer_project', 'customer_wholesale', 'customer_end', 'customer_other',
          'supplier_product', 'supplier_logistics', 'supplier_support')
 SCHEMA = (
+    '''CREATE TABLE IF NOT EXISTS operator_cursors (name TEXT PRIMARY KEY,
+       generation TEXT NOT NULL, position INTEGER NOT NULL)''',
+    '''CREATE TABLE IF NOT EXISTS operator_ingested (channel TEXT NOT NULL,
+       conversation_key TEXT NOT NULL, stable_id TEXT NOT NULL, at REAL NOT NULL,
+       PRIMARY KEY(channel,conversation_key,stable_id))''',
+    '''CREATE TABLE IF NOT EXISTS operator_health (component TEXT PRIMARY KEY,
+       ok INTEGER NOT NULL, at REAL NOT NULL, error_type TEXT, failures INTEGER NOT NULL DEFAULT 0)''',
     'CREATE TABLE IF NOT EXISTS operator_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)',
     '''CREATE TABLE IF NOT EXISTS operator_profiles (conversation_key TEXT PRIMARY KEY,
        value TEXT NOT NULL)''',
@@ -29,6 +36,7 @@ SCHEMA = (
        data TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)''',
     '''CREATE TABLE IF NOT EXISTS operator_decisions (id INTEGER PRIMARY KEY, event_id TEXT,
        action_id INTEGER, at REAL NOT NULL, phase TEXT NOT NULL, data TEXT NOT NULL)''',
+    'CREATE INDEX IF NOT EXISTS operator_action_event ON operator_actions(event_id)',
     '''CREATE TABLE IF NOT EXISTS operator_attempts (id INTEGER PRIMARY KEY,
        action_id INTEGER NOT NULL, part INTEGER NOT NULL, contact_key TEXT NOT NULL,
        digest TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
@@ -90,6 +98,14 @@ class Store:
     def initialize(self):
         with self.write():
             pass
+
+    def health(self, component, now, error=None):
+        # Exception messages may contain private text/paths. Record only the type.
+        with self.write() as db:
+            db.execute('INSERT INTO operator_health(component,ok,at,error_type,failures) VALUES(?,?,?,?,?) '
+                       'ON CONFLICT(component) DO UPDATE SET ok=excluded.ok,at=excluded.at,'
+                       'error_type=excluded.error_type,failures=failures+excluded.failures',
+                       (component, int(error is None), now, type(error).__name__ if error else None, int(error is not None)))
 
     @staticmethod
     def settings(db):

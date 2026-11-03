@@ -1,5 +1,5 @@
 // Real browser clicks on the real Operator component in a disposable routed build.
-// The shared App/nav stay untouched. APIs are intercepted; all sending uses a fake.
+// Uses a copy of the shared App/nav. APIs are intercepted; all sending uses a fake.
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, cp, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,14 +20,6 @@ try {
   await cp(resolve(web,'src'),resolve(root,'src'),{recursive:true});
   for(const file of ['index.html','package.json','tsconfig.json','vite.config.ts']) await cp(resolve(web,file),resolve(root,file));
   await symlink(deps,resolve(root,'node_modules'),'dir');
-  const appPath=resolve(root,'src/App.tsx');
-  let app=await readFile(appPath,'utf8');
-  app='import { Operator } from "./pages/Operator";\n'+app;
-  app=app.replace('<Route path="roles" element={<RolesPage />} />','<Route path="roles" element={<RolesPage />} />\n<Route path="operator" element={<Operator />} />');
-  await writeFile(appPath,app);
-  const navPath=resolve(root,'src/nav.ts');let nav=await readFile(navPath,'utf8');
-  nav=nav.replace('const PAGES: NavItem[] = [','const PAGES: NavItem[] = [\n{ key: "operator", label: "AI 运营员", path: "/operator", kind: "live", area: "front", group: "日常工作", icon: Bot },');
-  nav=nav.replace('"search", "roles",','"search", "roles", "operator",');await writeFile(navPath,nav);
   for(const [tool,args] of [['typescript/bin/tsc',['--noEmit']],['vite/bin/vite.js',['build']]]) {
     const built=spawnSync(process.execPath,[resolve(deps,tool),...args],{cwd:root,encoding:'utf8'});
     assert.equal(built.status,0,built.stdout+built.stderr);console.log(built.stdout.trim());
@@ -58,6 +50,10 @@ try {
     await page.getByRole('heading',{name:'AI 运营员',exact:true}).waitFor();
     const loaded=()=>page.getByRole('checkbox',{name:'启用 AI 运营员',exact:true}).waitFor({state:'visible'});
     await loaded();
+    await page.getByRole('region',{name:'演练记录',exact:true}).waitFor();
+    await page.getByTestId('rehearsal-1').getByText('拟发正文',{exact:true}).waitFor();
+    await page.getByTestId('rehearsal-1').getByText(/预计北京时间/).waitFor();
+    assert.equal(await page.getByTestId('rehearsal-1').locator('pre').count(),0);
     assert.equal(await page.getByTestId('action-1').getByRole('button',{name:'确认发送',exact:true}).isDisabled(),true);
     const tick=async name=>{
       const item=page.getByRole('checkbox',{name,exact:true}), expected=!(await item.isChecked());
@@ -66,6 +62,9 @@ try {
     };
     await tick('启用 AI 运营员');await tick('演练模式：只保存草稿');
     await tick('第 1 级');await tick('产品供应商 第 1 级');await tick('虚构供应商 第 1 级');
+    assert.equal(await page.getByTestId('action-4').getByRole('button',{name:'确认发送',exact:true}).isDisabled(),true);
+    await page.getByTestId('rehearsal-4').getByText('规格：缺少规格资料',{exact:true}).waitFor();
+    await page.getByTestId('rehearsal-4').getByText(/先核对原渠道联系人/).waitFor();
     assert.equal(state.settings.levels['1'],true);assert.equal(state.settings.types['1:supplier_product'],true);assert.equal(state.settings.contacts['1:fictional-supplier'],true);
     await page.getByTestId('action-1').getByRole('button',{name:'修改',exact:true}).click();
     await page.getByRole('textbox',{name:'草稿正文',exact:true}).fill('您好，请核对本次询盘的产品规格、装箱资料、现价、报价有效期与交期。');
