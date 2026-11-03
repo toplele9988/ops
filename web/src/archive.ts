@@ -1,3 +1,4 @@
+import { beijingDate } from "./format";
 import type { Tone } from "./labels";
 
 export interface Offer {
@@ -48,4 +49,4 @@ export const FIELD_STATE: Record<string, { text: string; tone: Tone }> = {
 export const dims = (l?: number | null, w?: number | null, h?: number | null) =>
   l != null && w != null && h != null ? `${+l.toFixed(1)}×${+w.toFixed(1)}×${+h.toFixed(1)} cm` : null;
 export const money = (price: string, currency: string) => `${currency === "CNY" ? "¥" : currency + " "}${price}`;
-export const todayIso = () => new Date().toISOString().slice(0, 10);
+export const todayIso = beijingDate;

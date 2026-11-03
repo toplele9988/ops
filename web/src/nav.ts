@@ -33,6 +33,7 @@ const PAGES: NavItem[] = [
   { key: "deals", label: "案子", path: "/deals", kind: "live", area: "front", group: "日常工作", icon: Briefcase },
   { key: "fulfil", label: "备货与发货", path: "/fulfilment", kind: "live", area: "front", group: "日常工作", icon: Truck },
   { key: "inbox", label: "商机沟通", path: "/inbox", kind: "live", area: "front", group: "日常工作", icon: Inbox },
+  { key: "outbox", label: "草稿未发送", path: "/outbox", kind: "live", area: "front", group: "日常工作", icon: Inbox },
   { key: "customers", label: "客户", path: "/customers", kind: "live", area: "front", group: "日常工作", icon: Users },
   { key: "directory", label: "微信通讯录", path: "/directory", kind: "live", area: "back", group: "整理工具", icon: BookUser },
   { key: "classification-review", label: "待分类", path: "/classify", kind: "live", area: "back", group: "整理工具", icon: Tags },

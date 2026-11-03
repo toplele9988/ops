@@ -13,7 +13,7 @@ export function NewDeal({ stage = "inquiry", compact = false }: { stage?: string
   const [f, setF] = useState({ customer: params.get("customer") ?? "", customer_name: params.get("customer_name") ?? "", conversation: params.get("conversation") ?? "", product_name: "", qty: "", destination_country: params.get("destination_country") ?? "" });
   const navigate = useNavigate();
   const action = useDealAction();
-  const customers = useQuery({ queryKey: ["new-deal-customers"], queryFn: () => get<{ items: { id: number; name: string; country?: string }[] }>("/api/v1/archive/parties?kind=customer&status=active&page_size=100"), enabled: open && source === "customer", retry: false });
+  const customers = useQuery({ queryKey: ["new-deal-customers"], queryFn: () => get<{ items: { id: number; name: string; country?: string }[] }>("/api/v1/parties-ops?kind=customer&page_size=100"), enabled: open && source === "customer", retry: false });
   const conversations = useQuery({ queryKey: ["new-deal-conversations"], queryFn: () => get<{ items: { key: string; buyer_name: string; country?: string; channel_label: string }[] }>("/api/v1/inbox/conversations?page_size=100"), enabled: open && source === "conversation", retry: false });
   const customer = source === "customer" ? customers.data?.items.find((c) => String(c.id) === f.customer)?.name : f.customer_name;
   const ready = customer?.trim() && f.product_name.trim() && /^[1-9]\d{0,5}$/.test(f.qty) && f.destination_country.trim() && (source !== "conversation" || f.conversation);

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
-import { useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router";
 import { get, postForm } from "../api";
 import { ago } from "../format";
 import { CHANNEL_NAME } from "../notes";
@@ -16,7 +16,7 @@ function Row({ s, busy, onAccept, onDismiss }: { s: T; busy: boolean; onAccept: 
   const c = conf(s.confidence);
   const name = s.suggested_party_name || s.conversation.counterpart_name;
   return (
-    <div className="row" style={{ alignItems: "flex-start" }}>
+    <div id={`triage-${s.id}`} className="row" tabIndex={-1} style={{ alignItems: "flex-start" }}>
       <div className="row-main" style={{ whiteSpace: "normal" }}>
         <div className="row-title" style={{ whiteSpace: "normal" }}>{s.conversation.counterpart_name} <Chip tone="plain">{CHANNEL_NAME[s.conversation.channel] ?? s.conversation.channel}</Chip> <Chip tone={c.tone}>{c.text}</Chip></div>
         <div className="row-sub" style={{ whiteSpace: "normal" }}>{s.conversation.preview}</div>
@@ -31,6 +31,7 @@ function Row({ s, busy, onAccept, onDismiss }: { s: T; busy: boolean; onAccept: 
 }
 
 export function TriagePage() {
+  const [params] = useSearchParams();
   const toast = useToast();
   const client = useQueryClient();
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -50,6 +51,8 @@ export function TriagePage() {
   });
   const [bulk, setBulk] = useState(false);
   const items = q.data?.items ?? [];
+  const target = items.find(s => (!params.get("suggestion") || String(s.id) === params.get("suggestion")) && (!params.get("conversation") || s.conversation_key === params.get("conversation")));
+  useEffect(() => { if (!(params.has("suggestion") || params.has("conversation")) || !target) return; const el = document.getElementById(`triage-${target.id}`); el?.scrollIntoView({ block: "center" }); el?.focus({ preventScroll: true }); el?.setAttribute("data-queue-target", "true"); return () => el?.removeAttribute("data-queue-target"); }, [target?.id, params]);
   const idents = items.filter((s) => s.action === "identity");
   const others = items.filter((s) => s.action !== "identity");
   const acceptAll = async () => {
@@ -64,6 +67,7 @@ export function TriagePage() {
         <div><h1 className="t-large">待整理的会话</h1><p>还没归到任何案子或往来单位的新会话。分拣员先替你看了一遍并给出建议，你点“确认”才会生效；它不会替你回复任何人。</p></div>
         <button type="button" className="btn primary" disabled={scan.isPending} onClick={() => scan.mutate()}><Sparkles size={16} aria-hidden="true" />{scan.isPending ? "分拣员在看…" : "让分拣员扫描一遍"}</button>
       </div>
+      {(params.has("suggestion") || params.has("conversation")) && q.data && !target && <p role="status">这条待办已处理或暂不在当前列表，请核对会话后刷新。</p>}
       {q.isLoading && <Skeleton lines={5} />}
       {q.isError && <div className="group"><Empty title="没能读到待整理的会话">{(q.error as Error).message}</Empty></div>}
       {q.data && items.length === 0 && <div className="group"><Empty title="没有待整理的会话" action={<button type="button" className="btn" disabled={scan.isPending} onClick={() => scan.mutate()}>扫描一遍</button>}>最近 30 天里，对方说了话、又还没归到案子的会话，会出现在这里。</Empty></div>}

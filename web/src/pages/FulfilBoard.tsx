@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -41,6 +42,7 @@ export function FulfilBoardPage() {
   return (
     <>
       <div className="page-head"><div><h1 className="t-large">备货与发货</h1><p>已经成交的案子，现在走到哪一步、哪个延期了。延期的排在最前面。</p></div></div>
+      <PageIntro page="fulfilment" />
       {q.isPending && <Skeleton lines={4} />}
       {q.isError && <ReadFailure subject="履约进度" error={q.error} retry={() => q.refetch()} busy={q.isFetching} />}
       {q.isSuccess && items.length === 0 && <div className="group"><Empty title="还没有已成交的案子" action={<Link className="btn primary" to="/deals?stage=awaiting_payment">去案子核对收款</Link>}>客户付款、你在案子里点“确认收款”后，案子会出现在这里。</Empty></div>}

@@ -1,3 +1,4 @@
+import { beijingDate } from "../format";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Plus } from "lucide-react";
 import { useState } from "react";
@@ -12,7 +13,7 @@ import { Chip, Sheet, Skeleton } from "./bits";
 import { useToast } from "./Toast";
 import { ReadFailure, WriteRecovery, useWriteRecovery } from "./ReadState";
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = beijingDate;
 
 function useAct(invalidate: string[], readback: () => Promise<unknown>) {
   const toast = useToast();

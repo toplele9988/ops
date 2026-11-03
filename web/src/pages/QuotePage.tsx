@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Copy, Plus, TriangleAlert } from "lucide-react";
 import { useState } from "react";
@@ -75,6 +76,7 @@ export function QuotePage() {
           {d.status === "sent" && <><button type="button" className="btn primary" onClick={() => run(`quotes/${d.id}/status`, { action: "accept" }, "已记录：客户接受")}>客户接受</button><button type="button" className="btn" onClick={() => run(`quotes/${d.id}/status`, { action: "reject" }, "已记录：客户拒绝")}>客户拒绝</button></>}
         </div>
       </div>
+      <PageIntro text="核对这笔生意的往来、报价和待办，再推进下一步。" />
 
       <div className="kpis" style={{ marginBottom: 16 }}>
         <div className="kpi"><span className="t-foot">已登记成本小计</span><span className="kpi-n num">{yuan(d.totals.cost_cny)}</span><span className="t-cap">{d.totals.cost_complete ? "按已登记项目计算，税费与附加费仍须核对" : "成本还不完整"}</span></div>
@@ -158,7 +160,7 @@ export function QuotePage() {
                     <div className="row-sub">{c.calc?.mode ? `${MODE[c.calc.mode] ?? c.calc.mode} · ${UNIT[c.calc.unit ?? ""] ?? ""} ¥${c.calc.unit_price ?? ""}` : c.source_note ?? ""}{c.valid_until ? ` · 有效至 ${c.valid_until}` : ""}</div>
                     {c.calc?.party && <div className="row-sub">单位：{c.calc.party.name} · {c.source_note}</div>}
                     {c.calc?.source_offer && <div className="row-sub">来源快照：{c.calc.source_offer.name} · {c.calc.source_offer.source_ref ?? "档案询价"}</div>}
-                    {c.calc?.source_offer?.conversation_key && <Link className="btn sm" to={`/inbox?c=${encodeURIComponent(c.calc.source_offer.conversation_key)}`}>回看询价会话</Link>}
+                    {c.calc?.source_offer?.conversation_key && <Link className="btn sm" to={`/inbox?conversation=${encodeURIComponent(c.calc.source_offer.conversation_key)}`}>回看询价会话</Link>}
                     {c.calc?.quantity != null && <div className="row-sub num">按 {c.calc.quantity} {c.calc.unit} 计价</div>}
                     {!locked && c.calc?.needs_review && <button type="button" className="btn sm" disabled={act.isPending} onClick={() => run(`quotes/${d.id}/costs/${c.id}/review`, { confirm: "1" }, "已记录人工复核")}>已向该单位核对，总费用仍有效</button>}
                     {c.calc?.blocking?.map((b) => <div className="row-sub" key={b.code} style={{ color: "var(--red)" }}>{b.message}</div>)}

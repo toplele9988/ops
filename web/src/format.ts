@@ -1,6 +1,6 @@
-const DATE = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" });
-const TIME = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
-const toDate = (value: number | string) => new Date(typeof value === "number" && value < 1e12 ? value * 1000 : value);
+const DATE = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long" });
+const TIME = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+const toDate = (value: number | string) => new Date(typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : /^\d{4}-\d\d-\d\d[T ]\d\d:\d\d(:\d\d(\.\d+)?)?$/.test(value) ? value.replace(" ", "T") + "Z" : value);
 
 export const today = () => DATE.format(new Date());
 export const formatTime = (value?: number | string | null) => {
@@ -25,5 +25,7 @@ export const percent = (rate: number) => `${Math.round(rate * 100)}%`;
 /** Long calendar date for day separators; accepts ISO strings or epoch seconds like the rest of the API. */
 export const longDate = (value: number | string) => {
   const date = toDate(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "long", day: "numeric" });
 };
+
+export const beijingDate = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);

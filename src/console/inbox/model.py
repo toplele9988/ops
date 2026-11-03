@@ -213,3 +213,14 @@ def paginate(items, values, ready):
     start = (values['page'] - 1) * values['page_size']
     return dict(ready=ready, items=items[start:start + values['page_size']], total=len(items),
                 page=values['page'], page_size=values['page_size'])
+
+
+def message_version(conv):
+    import hashlib
+    import json
+    last = conv['messages'][-1] if conv['messages'] else {}
+    # List and detail adapters can expose different history lengths. Use source
+    # last_seen and the last message, not the lazily loaded history count.
+    return hashlib.sha256(json.dumps([conv['last_seen'], last.get('text'), last.get('role')],
+                                     ensure_ascii=False).encode()).hexdigest()
+

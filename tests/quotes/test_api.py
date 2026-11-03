@@ -48,7 +48,7 @@ class ApiTests(Fixture,unittest.TestCase):
         return json.loads(r.body)
 
     def test_all_routes_auth_post_recheck_before_write_and_threadpool(self):
-        self.assertEqual(len(self.routes),22)
+        self.assertEqual(len(self.routes),23)
         for route in self.routes:
             for denied in ({'principal':False},{'authenticated':False},{'recheck':False}):
                 r=asyncio.run(route.endpoint(request(ids={'id':'1','cid':'1','lid':'1'},fields={},**denied)))
@@ -74,7 +74,7 @@ class ApiTests(Fixture,unittest.TestCase):
         req.state.password_recheck=lambda:events.append('recheck') or True
         with patch.object(self.quotes,'write',write):
             self.assertEqual(asyncio.run(self.handlers['deals/{id}/quotes','POST'](req)).status_code,200)
-        self.assertEqual(events,['recheck','write'])
+        self.assertEqual(events,['recheck','recheck','write'])
 
     def test_forms_validation_recheck_errors_fixed_503(self):
         did,rid,*_=self.setup_round()
@@ -172,7 +172,7 @@ class ApiTests(Fixture,unittest.TestCase):
 
     def test_builder_signature_get_read_then_recheck_and_stream_limit(self):
         routes=api.build(self.app,self.path,today=lambda:self.today,fx_path=self.fx_path,clock=lambda:1893456000)
-        self.assertEqual(len(routes),22)
+        self.assertEqual(len(routes),23)
         events=[]
         req=request(ids={'id':'1'})
         req.state.password_recheck=lambda:events.append('recheck') or False

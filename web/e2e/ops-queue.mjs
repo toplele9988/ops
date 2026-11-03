@@ -49,14 +49,14 @@ try {
     await page.locator('[data-kind="buyer_reply"]').getByRole("link", { name: "去回复买家" }).click();
     assert.equal(new URL(page.url()).searchParams.get("conversation"), "demo-alibaba");
     await page.locator(".thread-body .bubble").first().waitFor();
-    if (viewport.width < 900) await page.getByRole("button", { name: "查看资料与 AI 建议" }).click();
-    await page.getByRole("button", { name: "帮我起草一份回复" }).click();
-    await page.getByRole("button", { name: "放进回复框" }).waitFor();
+    if (viewport.width < 900) await page.getByRole("button", { name: "客户资料与 AI 建议 · 展开操作" }).click();
+    await page.getByRole("button", { name: "AI 起草回复" }).click();
+    await page.waitForFunction(() => document.querySelector(".composer textarea")?.value.includes("演示规格正在核对"));
     assert.equal(state.outbox.length, 1);
     assert.equal(state.outbox[0].dry_run, true);
     assert.equal(state.outbox[0].status, "draft");
-    assert.match(await page.locator(".quote").innerText(), /演示规格正在核对/);
-    if (viewport.width < 900) await page.getByRole("button", { name: "收起资料与 AI 建议" }).click();
+    assert.match(await page.getByRole("textbox", { name: "回复内容（可编辑）", exact: true }).inputValue(), /演示规格正在核对/);
+
     await page.goBack();
     await count(7); // Drafting alone is not a sent reply.
     await page.locator('[data-kind="buyer_reply"]').getByRole("button", { name: "已处理", exact: true }).click();
@@ -67,10 +67,10 @@ try {
 
     await page.locator('[data-kind="logistics"]').getByRole("link", { name: "去跟进物流" }).click();
     assert.equal(new URL(page.url()).pathname, "/app/deals/1");
-    await page.getByRole("button", { name: /生产中.*已延期/ }).click();
+    await page.getByRole("button", { name: "记录生产中", exact: true }).click();
     const edit = page.locator("dialog[open]");
-    await edit.locator('select[name="status"]').selectOption("done");
-    await edit.getByRole("button", { name: "保存", exact: true }).click();
+    await edit.getByLabel("进展", { exact: true }).selectOption("done");
+    await edit.getByRole("button", { name: "保存节点", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector("dialog[open]"));
     assert.equal(state.nodeDone, true);
     assert.ok(state.calls.some((c) => c.method === "POST" && c.path === "/api/v1/deals/1/fulfilment/production/update" && c.body.status === "done"));

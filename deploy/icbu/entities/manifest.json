@@ -1,0 +1,12 @@
+{
+  "baseline": {
+    "icbu_inbound_receiver.py": "5ce1a398a35305ff7a08cfe0d16143fb16ddb401d01bd7dc7d176507bbf4376c",
+    "icbu_attachments.py": "8abd88efcd165abebad84e6f060fa841a4ebcd83ceacb87dee91bbe134dc82fc"
+  },
+  "candidate": {
+    "icbu_inbound_receiver.py": "f4de7b2d54371bf957f8912b6e3e6c2af499df5b6aa140a3ad2f9a3a2eb5c13e",
+    "icbu_entities.py": "d449c7ba2adb195fd9a66d6e97b1c2c9a7e9e553fe8a6d0da9e4b4fc5753e0c0"
+  },
+  "systemd_cat_sha256": "795530a6b7eb618cfb5c6bea148855d2b5eb4b643fef9a1d2f447d5e1b66d7a1",
+  "patch_sha256": "d6967374f88fe4e050a4e3282ef563124e08b961136449fc334ced756348f709"
+}

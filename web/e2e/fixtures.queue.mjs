@@ -1,5 +1,5 @@
 // Fictional browser-memory state only. No real service, sender or payment transport.
-import { installFixtures } from "./fixtures.mjs";
+import { installBaseFixtures as installFixtures } from "./fixtures.base.mjs";
 
 const item = (kind, title, priority, to, action) => ({ id: `queue-${kind}`, kind, title, label: ({ pipeline: "管道异常", buyer_reply: "待回复买家", supplier_chase: "要催的供应商", payment: "待确认收款", quote_expiry: "报价到期", logistics: "物流节点超期", ownership: "待你确认归属" })[kind], priority, to, action, detail: "纯虚构验收待办，请核对后处理。", revision: "fictional-v1", due_on: null });
 export const queueItems = [
@@ -14,7 +14,7 @@ export const queueItems = [
 export function queueResponse(items = queueItems) {
   return { generated_at: Date.now() / 1000, items, total: items.length, complete: true, unavailable: [], counts: Object.fromEntries(items.map((i) => [i.kind, 1])) };
 }
-export async function installQueueFixtures(page, problems = []) {
+export async function installQueueFixtures(page, problems = [], { queueOnly = false } = {}) {
   await installFixtures(page, problems);
   const state = { items: structuredClone(queueItems), calls: [], outbox: [], nodeDone: false, failQueue: false, complete: true, unavailable: [] };
   await page.route("**/api/v1/**", async (route) => {
@@ -28,6 +28,7 @@ export async function installQueueFixtures(page, problems = []) {
       if (state.failQueue) return respond({ error: "虚构暂时读不到" }, 503);
       return respond({ ...queueResponse(state.items), complete: state.complete, unavailable: state.unavailable });
     }
+    if (queueOnly) return route.fallback();
     if (path === "/api/v1/inbox/conversations/demo-alibaba/draft" && method === "POST") {
       const draft = { id: 101, status: "new", text: "演示规格正在核对，请确认数量。", language: "zh-CN", needs_confirmation: [], model: "fictional", created_at: Date.now() / 1000 };
       state.outbox.push({ id: 101, status: "draft", dry_run: true, conversation_key: "demo-alibaba", text: draft.text });
@@ -52,7 +53,7 @@ export async function installQueueFixtures(page, problems = []) {
     return route.fallback();
   });
   // This overriding detail fixture starts from a fictional schema, not a network response.
-  await page.route("**/api/v1/deals/1", async (route) => route.fulfill({ json: {
+  if (!queueOnly) await page.route("**/api/v1/deals/1", async (route) => route.fulfill({ json: {
     id: 1, title: "演示灯具询盘", customer: { id: 2, name: "演示客户" }, stage: "paid", stage_label: "已成交·备货", status: "won", value: "200.00", currency: "USD", last_activity_at: 1793577600,
     participants: [], waiting_on_us: true, waiting_on: [], overdue: [], needs_attention: true, open_tasks: 0, next_action: "核对物流", unlinked_participants: 0, conversations: [], items: [],
     tasks: {},

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
-import { Link } from "react-router";
+import { useEffect } from "react";
+import { Link, useSearchParams } from "react-router";
 import { get } from "../api";
 import type { Tone } from "../labels";
 import type { PipelineState as Status } from "../types/pipeline";
@@ -106,7 +107,10 @@ function SourceCard({ source }: { source: Source }) {
 }
 
 export function Pipeline() {
+  const [params] = useSearchParams();
   const q = useQuery({ queryKey: ["pipeline-health"], queryFn: () => get<Data>("/api/v1/pipeline/health"), retry: false, refetchInterval: 60_000, refetchOnWindowFocus: false });
+  const channel = params.get("channel");
+  useEffect(() => { if (!channel || !q.data) return; const el = Array.from(document.querySelectorAll<HTMLElement>("[data-pipeline-channel]")).find(e => e.dataset.pipelineChannel === channel); el?.scrollIntoView({ block: "center" }); el?.focus({ preventScroll: true }); }, [channel, q.data]);
   return (
     <div className="pipeline-page">
       <div className="page-head">
@@ -121,7 +125,7 @@ export function Pipeline() {
         <section className="block pipeline-scorecard" aria-labelledby="pipeline-acceptance">
           <h2 className="group-title" id="pipeline-acceptance">验收达标</h2>
           <p className="t-foot pipeline-muted">任一必验项不达标，渠道就不达标；没有不达标但还有未知项，渠道为未知。参考项不参与汇总，当前健康状态不等于完整验收。</p>
-          {(q.data.scorecard ?? []).map((channel) => <section key={channel.channel} className="group pipeline-score-channel">
+          {(q.data.scorecard ?? []).map((channel) => <section key={channel.channel} data-pipeline-channel={channel.channel} data-queue-target={params.get("channel") === channel.channel || undefined} tabIndex={-1} className="group pipeline-score-channel">
             <div className="pipeline-card-head"><h3 className="t-title">{channel.label}</h3><Chip tone={RESULT_TONE[channel.result]}>{channel.result_label}</Chip></div>
             <details open><summary className="t-foot">查看指标、目标与实测口径</summary>
               <div className="pipeline-score-metrics">{channel.metrics.map((metric) => <div className="pipeline-score-metric" key={metric.key}>
@@ -133,7 +137,7 @@ export function Pipeline() {
           </section>)}
           {!q.data.scorecard?.length && <Empty title="验收记分卡尚未接入">请管理员核对服务版本后刷新，缺少记录不能当作达标。</Empty>}
         </section>
-        <div className="pipeline-grid">{q.data.sources.map((source) => <SourceCard key={source.key} source={source} />)}</div>
+        <div className="pipeline-grid">{q.data.sources.map((source) => <div key={source.key} data-pipeline-channel={source.channel} data-queue-target={channel === source.channel || undefined} tabIndex={-1}><SourceCard source={source} /></div>)}</div>
         {q.data.sources.length === 0 && <Empty title="暂时没有管道统计">请管理员核对来源配置，然后刷新。</Empty>}
         <section className="block pipeline-coverage"><h2 className="group-title">附件与翻译覆盖率</h2>
           <div className="group">{q.data.channels.map((channel) => <div key={channel.channel} className="row pipeline-coverage-row">

@@ -1,6 +1,6 @@
 // Fictional W2 state machine. Every POST mutates memory; no backend or channel is contacted.
 import assert from 'node:assert/strict';
-import { installFixtures } from './fixtures.mjs';
+import { installBaseFixtures as installFixtures } from './fixtures.base.mjs';
 const at = '2026-11-02T08:00:00+08:00';
 const key = (kind, channel, name) => Buffer.from(JSON.stringify([kind, channel, 'fictional-account', name])).toString('base64url');
 export const customerKey = key('customer', 'alibaba', '虚构客户甲');
@@ -31,15 +31,16 @@ export async function installInboxFixtures(page, state, problems) {
     state.requests.push({ method, path, body });
     const ok = async (json, status = 200) => route.fulfill({ status, json: structuredClone(json) });
     try {
-      if (method === 'GET' && path === '/inbox/summary') return ok({ ready: true, revision: String(state.revision), conversation_count: state.conversations.length, waiting_total: state.conversations.filter(c => c.workflow_state === 'waiting' && c.counterpart_role !== 'supplier').length, by_channel: ['alibaba', 'wechat', 'whatsapp'].map(channel => ({ channel, label: { alibaba: '阿里', wechat: '微信', whatsapp: 'WhatsApp' }[channel], waiting: 1 })) });
+      if (method === 'GET' && path === '/inbox/summary') return ok({ ready: true, channels: [], new_24h: 0, draft_new: state.draft ? 1 : 0, revision: String(state.revision), conversation_count: state.conversations.length, waiting_total: state.conversations.filter(c => c.workflow_state === 'waiting' && c.counterpart_role !== 'supplier').length, by_channel: ['alibaba', 'wechat', 'whatsapp'].map(channel => ({ channel, label: { alibaba: '阿里', wechat: '微信', whatsapp: 'WhatsApp' }[channel], waiting: 1 })) });
       if (method === 'GET' && path === '/inbox/conversations') {
         if (state.delayList) await new Promise(resolve => setTimeout(resolve, state.delayList));
         if (state.failList) return ok({ error: '虚构读取失败' }, 503);
         const q = url.searchParams.get('q')?.toLowerCase();
-        return ok(list(state.conversations.filter(c => (!url.searchParams.get('channel') || c.channel === url.searchParams.get('channel')) && (url.searchParams.get('role') === 'all' || c.counterpart_role !== 'supplier') && (!q || `${c.buyer_name} ${c.customer_name} ${c.last.text}`.toLowerCase().includes(q)) && (url.searchParams.get('state') === 'all' || c.workflow_state === url.searchParams.get('state')))));
+        return ok(list(state.conversations.filter(c => (!url.searchParams.get('channel') || c.channel === url.searchParams.get('channel')) && (url.searchParams.get('role') === 'all' || c.counterpart_role !== 'supplier') && (!q || `${c.buyer_name} ${c.customer_name} ${c.last.text}`.toLowerCase().includes(q)) && (!url.searchParams.has('state') || url.searchParams.get('state') === 'all' || c.workflow_state === url.searchParams.get('state')))));
       }
+      if (method === 'GET' && path === '/parties-ops' && !state.partiesOps) return ok(list(state.customers.map((c, i) => ({ id: i + 1, name: c.buyer_name, country: c.country }))));
       if (method === 'GET' && path === '/customers') { const q = url.searchParams.get('q'); return ok(list(state.customers.filter(c => !q || c.buyer_name.includes(q)))); }
-      if (method === 'GET' && path === '/deals') { const q = url.searchParams.get('q'); return ok(list(state.deals.filter(d => !q || d.title.includes(q)))); }
+      if (method === 'GET' && path === '/deals') { const q = url.searchParams.get('q'); return ok(list(state.deals.filter(d => (!q || d.title.includes(q)) && (!url.searchParams.get('status') || url.searchParams.get('status') === 'all' || d.status === url.searchParams.get('status'))))); }
       if (method === 'POST' && path === '/lang/translate') { state.translations++; return ok({ target_language: body.target_language, items: body.message_indices.split(',').map(raw => ({ index: Number(raw), source_text: state.messages[Number(raw)].text, source_hash: 'fictional-hash', text: '请确认虚构灯具 X 的外箱尺寸。', error: null, complete: true, cached: false, chunks: [] })) }); }
       const match = path.match(/^\/inbox\/conversations\/([^/]+)(.*)$/);
       if (!match) return route.fallback();
@@ -49,7 +50,7 @@ export async function installInboxFixtures(page, state, problems) {
       if (method === 'GET' && suffix === '') return ok({ conversation: conv, messages: state.messages, draft: state.draft });
       if (method === 'GET' && suffix === '/ops/context') {
         if (state.failContext) return ok({ error: '虚构资料读取失败' }, 503);
-        return ok({ workflow_state: conv.workflow_state, remind_at: conv.remind_at ?? null, customer_key: conv.customer_key, customer_name: conv.customer_name, customer: state.customers.find(c => c.key === conv.customer_key) ?? null, deals: state.links.filter(l => l.key === convKey).map(l => state.deals.find(d => d.id === l.id)), party: { name: conv.customer_name }, suppliers: state.conversations.filter(c => c.counterpart_role === 'supplier'), outbox: state.outbox.filter(r => r.conversation_key === convKey || r.source_key === convKey), dry_run: true });
+        return ok({ workflow_state: conv.workflow_state, remind_at: conv.remind_at ?? null, customer_key: conv.customer_key, customer_name: conv.customer_name, customer: state.customers.find(c => c.key === conv.customer_key) ?? null, deals: state.links.filter(l => l.key === convKey).map(l => state.deals.find(d => d.id === l.id)), party: { id: conv.customer_party_id ?? 1, name: conv.customer_name, country: 'GB', timezone: 'Europe/London' }, suppliers: state.conversations.filter(c => c.counterpart_role === 'supplier'), outbox: state.outbox.filter(r => r.conversation_key === convKey || r.source_key === convKey), dry_run: true });
       }
       if (method === 'POST') {
         assert.ok(body.request_id, 'Every mutation has an intent id');
@@ -78,11 +79,11 @@ export async function installInboxFixtures(page, state, problems) {
             }
             case 'create_deal': {
               let existing = state.links.find(l => l.key === convKey && l.created);
-              if (!existing) { const deal = { id: 8, title: body.title || '虚构新询盘', stage_label: '询盘' }; state.deals.push(deal); existing = { key: convKey, id: deal.id, created: true }; state.links.push(existing); }
+              if (!existing) { const deal = { id: 8, title: body.title || '虚构新询盘', stage_label: '询盘' }; state.deals.push(deal); existing = { key: convKey, id: deal.id, created: true }; state.links.push(existing); state.onCreate?.(deal, convKey); }
               result = { id: existing.id, notice: '案子已建好，会话已关联' }; break;
             }
             case 'link_deal': if (!state.links.some(l => l.key === convKey && l.id === Number(body.deal_id))) state.links.push({ key: convKey, id: Number(body.deal_id) }); result = { notice: '会话已关联到案子' }; break;
-            case 'assign': { assert.equal(body.confirm, '1'); const c = state.customers.find(c => c.key === body.customer_key); assert.ok(c); conv.customer_key = c.key; conv.customer_name = c.buyer_name; result = { notice: '会话已归到' + c.buyer_name }; break; }
+            case 'assign': { assert.equal(body.confirm, '1'); const c = body.customer_party_id ? state.customers[Number(body.customer_party_id) - 1] : state.customers.find(c => c.key === body.customer_key); conv.customer_party_id = Number(body.customer_party_id) || 1; assert.ok(c); conv.customer_key = c.key; conv.customer_name = c.buyer_name; result = { notice: '会话已归到' + c.buyer_name }; break; }
             case 'done': conv.workflow_state = 'done'; result = { notice: '已标记已处理，新消息到达会再次提醒' }; break;
             case 'reopen': conv.workflow_state = 'waiting'; conv.remind_at = null; result = { notice: '已恢复跟进' }; break;
             case 'remind': assert.ok(Date.parse(body.remind_at) > Date.now()); conv.remind_at = Date.parse(body.remind_at)/1000; conv.workflow_state = 'replied'; result = { notice: '提醒已记下，到时会回到要我回复' }; break;

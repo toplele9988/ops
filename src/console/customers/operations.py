@@ -45,6 +45,8 @@ SCHEMA = (
 def install(db):
     for statement in SCHEMA:
         db.execute(statement)
+    if "timezone" not in {r[1] for r in db.execute("PRAGMA table_info(parties_ops_profiles)")}:
+        db.execute("ALTER TABLE parties_ops_profiles ADD COLUMN timezone TEXT")
 
 
 def parameters(params):
@@ -98,6 +100,7 @@ class Parties:
             merges = rows('parties_ops_merges')
             active = {r['source_id']: r['target_id'] for r in merges if not r['undone_at']}
             profiles = {r['party_id']: r for r in rows('parties_ops_profiles')}
+            row_id = active.get(row_id, row_id)
             if resource == 'conversations':
                 return {'items': [dict(key=c['key'], channel=c['channel'], name=c['buyer_name'],
                     party_id=active.get(owners.get(c['key']), owners.get(c['key']))) for c in conversations.values()]}
@@ -125,7 +128,7 @@ class Parties:
                 profile = profiles.get(p['id'], {})
                 last = max((c.get('last_seen') or 0 for c in convs), default=0) or None
                 item = dict(id=p['id'], kind=p['kind'], name=p['name'], country=p.get('country') or '',
-                    notes=p['notes'] or '', tags=profile.get('tags', ''), next_followup=profile.get('next_followup'),
+                    notes=p['notes'] or '', timezone=profile.get('timezone') or None, tags=profile.get('tags', ''), next_followup=profile.get('next_followup'),
                     last_contact=last, channels=sorted({c['channel'] for c in convs}),
                     todo_count=task_count + waiting, open_deals=len(open_ids))
                 if row_id is not None:
@@ -201,7 +204,7 @@ class Parties:
         fields = dict(fields)
         token = v.text(fields.pop('request_id', ''), 100, required=True)
         allowed = {'create': {'name', 'kind', 'country', 'conversation_key'},
-            'update': {'name', 'country', 'notes', 'tags', 'next_followup'},
+            'update': {'name', 'country', 'timezone', 'notes', 'tags', 'next_followup'},
             'link': {'conversation_key'}, 'merge': {'source_id', 'confirm'},
             'undo': {'merge_id', 'confirm'}, 'draft': {'purpose', 'conversation_key'},
             'review': {'draft_id', 'text', 'confirm'}, 'verify': {'product_id', 'confirm'}, 'deal': {'title'},
@@ -251,8 +254,17 @@ class Parties:
                 current = db.execute('SELECT * FROM parties_ops_profiles WHERE party_id=?', (pid,)).fetchone()
                 tags = v.text(f['tags'], 300) or '' if 'tags' in f else current['tags'] if current else ''
                 due = (v.iso_date(f['next_followup']) if f['next_followup'] else None) if 'next_followup' in f else current['next_followup'] if current else None
-                db.execute('INSERT INTO parties_ops_profiles VALUES(?,?,?,?) ON CONFLICT(party_id) DO UPDATE SET tags=excluded.tags,next_followup=excluded.next_followup,updated_at=excluded.updated_at',
+                db.execute('INSERT INTO parties_ops_profiles(party_id,tags,next_followup,updated_at) VALUES(?,?,?,?) ON CONFLICT(party_id) DO UPDATE SET tags=excluded.tags,next_followup=excluded.next_followup,updated_at=excluded.updated_at',
                            (pid, tags, due, stamp))
+                if 'timezone' in f:
+                    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+                    zone = v.text(f['timezone'], 100) or None
+                    if zone:
+                        try:
+                            ZoneInfo(zone)
+                        except (ZoneInfoNotFoundError, ValueError):
+                            raise v.BadRequest('请填写有效的 IANA 时区，例如 Europe/London') from None
+                    db.execute('UPDATE parties_ops_profiles SET timezone=? WHERE party_id=?', (zone, pid))
             elif op == 'link':
                 self._link(db, pid, f.get('conversation_key', ''), who, stamp)
                 message = '已关联会话，全部往来已归入时间线'

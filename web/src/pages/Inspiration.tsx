@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
@@ -118,6 +119,7 @@ export function Inspiration() {
           <p>你转发给运营微信的视频号卡片，自动整理在这里：它讲了什么、对我们有没有用、要不要试。目前只读得到卡片上的文字，视频本身还没下载，所以「怎么用」有时只能写成需要看原视频。</p>
         </div>
       </div>
+      <PageIntro text="核对灵感来源，记录对当前生意有用的改进。" />
 
       <div className="toolbar">
         <Segmented label="按类型筛选" value={relevance} options={options} onChange={(value) => setFilter({ relevance: value })} />

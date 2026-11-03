@@ -1,5 +1,5 @@
 // Fictional mutable browser fixtures. No requests reach a business service.
-import { installFixtures } from './fixtures.mjs';
+import { installBaseFixtures as installFixtures } from './fixtures.base.mjs';
 
 export async function installPartiesFixtures(page, problems = [], { empty = false } = {}) {
   await installFixtures(page, problems);

@@ -1,5 +1,5 @@
 // Fictional stateful browser fixtures. No HTTP proxy, database or channel sender.
-import { installFixtures } from './fixtures.mjs';
+import { installBaseFixtures as installFixtures } from './fixtures.base.mjs';
 export const stages = ['inquiry','sourcing','quoting','negotiating','awaiting_payment','paid','inspection','shipped','delivered','aftersales','reorder'];
 const labels = ['询盘','询价核实','报价','谈判','待付款','已成交·备货','验货','已发货','已签收','售后','返单'];
 const tasks = [['弄清需求'],['确认供应商成本','向货代要运价'],['核对成本报价有效期','检查倒挂'],['记录客户还价'],['确认收款'],['下单给供应商','确认交期','通知客户生产进度'],['安排验货'],['确认到达日'],['确认签收'],[],[]];
@@ -44,6 +44,7 @@ export async function installDealFixtures(page, problems=[]) {
     const reply=async (data,status=200)=>route.fulfill({status,json:structuredClone(data)});
     try {
       if(method==='GET') {
+        if(path==='parties-ops') return reply(pageOf(parties.filter((p)=>p.kind===url.searchParams.get('kind'))));
         if(path==='archive/parties') return reply(pageOf(parties.filter((p)=>p.kind===url.searchParams.get('kind'))));
         if(path==='archive/products') return reply(pageOf(products));
         if(path==='inbox/conversations') return reply(pageOf(conversations));
@@ -70,6 +71,7 @@ export async function installDealFixtures(page, problems=[]) {
         }
         return route.fallback();
       }
+      if (!/^(deals(?:\/|$)|deal-tasks\/|quotes\/|payments\/)/.test(path)) return route.fallback();
       if(method!=='POST') throw Error('Unexpected method '+method);
       state.posts.push({path,fields:f});
       const signature=JSON.stringify([path,f]);
@@ -84,6 +86,7 @@ export async function installDealFixtures(page, problems=[]) {
       } else if(d&&match[2]==='update') {if(f.stage)advance(d,f.stage);Object.assign(d,Object.fromEntries(Object.entries(f).filter(([k])=>k!=='operation_key'&&k!=='stage')));event(d,'更新案子资料');}
       else if(d&&match[2]==='participants') {const p=parties.find((p)=>String(p.id)===f.party_id);d.participants.push({...p,id:next(),party_id:p.id,role:f.role,state:'none',conversations:[],last_at:null});event(d,'添加参与方');}
       else if(d&&match[2]==='conversations') {const p=d.participants.find((p)=>String(p.party_id)===f.party_id),c=conversations.find((c)=>c.key===f.conversation_key);d.conversations.push({id:next(),key:c.key,party_id:p.party_id});p.conversations.push({...c,title:c.buyer_name});p.state='us';event(d,'关联会话');}
+      else if(d&&match[2]==='items') {d.items.push({id:result.id,name:f.name,qty:Number(f.qty)});event(d,'添加产品');}
       else if(d&&match[2]==='tasks') {d.tasks[d.stage].push({id:result.id,title:f.title,status:'open',stage:d.stage});event(d,'添加待办');}
       else if(path.startsWith('deal-tasks/')) {const id=Number(path.split('/')[1]);const deal=state.deals.find((d)=>Object.values(d.tasks).flat().some((t)=>t.id===id));Object.values(deal.tasks).flat().find((t)=>t.id===id).status=f.status;event(deal,'完成待办');}
       else if(d&&match[2]==='events')event(d,f.note);

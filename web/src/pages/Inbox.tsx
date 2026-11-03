@@ -11,6 +11,8 @@ import { InboxBlock } from "./inbox/Attachment";
 import { MessageTranslationControl, TranslationToolbar, useConversationTranslation } from "../ui/LanguagePanels";
 import { inboxContext, type Conv, type Detail, type Draft, type Result } from "../ops/inbox";
 import { Operations, Reply } from "./inbox/Operations";
+import { PageIntro } from "./overview/PageIntro";
+import { CounterpartTime } from "../ui/CounterpartTime";
 import "./inbox/inbox.css";
 
 function DraftAdvice({ convKey, draft, onUse, onResult }: { convKey: string; draft: Draft | null; onUse: (v: string) => void; onResult: (r: Result) => void }) {
@@ -52,7 +54,7 @@ function Conversation({ convKey, onBack }: { convKey: string; onBack: () => void
           {m.text.trim() && <MessageTranslationControl state={t} busy={translation.busy} />}
           {t.showing && t.item?.text && <div className="quote">{t.item.text}</div>}
         </article>; })}
-        {context.data?.outbox.map((row) => <article key={row.id} className="inbox-queue" data-testid="dry-run-record"><b>{row.state === "draft" ? "供应商询问草稿（演练）" : "已进入发送队列（演练）"}</b><p>{row.text}</p>{row.conversation_key !== convKey && <Link className="btn sm" to={`/inbox?role=all&c=${row.conversation_key}`}>打开供应商会话</Link>}</article>)}
+        {context.data?.outbox.map((row) => <article key={row.id} className="inbox-queue" data-testid="dry-run-record"><b>{row.state === "draft" ? "供应商询问草稿（演练）" : "已进入发送队列（演练）"}</b><p>{row.text}</p>{row.conversation_key !== convKey && <Link className="btn sm" to={`/inbox?role=all&conversation=${row.conversation_key}`}>打开供应商会话</Link>}</article>)}
       </div>
       <Reply convKey={convKey} name={c.buyer_name} reply={reply} setReply={setReply} onResult={onResult} />
     </section>
@@ -63,6 +65,7 @@ function Conversation({ convKey, onBack }: { convKey: string; onBack: () => void
       <div id="conversation-profile" className="pane-body profile-body">
         {context.isLoading && <Skeleton />}
         {context.isError && <Empty title="没能读到客户与案子" action={<button className="btn" onClick={() => context.refetch()}>重新读取</button>}>{context.error.message}</Empty>}
+        <CounterpartTime country={context.data?.party?.country ?? c.country} timezone={context.data?.party?.timezone} />
         {context.data && <Operations convKey={convKey} context={context.data} onResult={onResult} />}
         <DraftAdvice convKey={convKey} draft={draft} onUse={(v) => { setReply(v); setShowProfile(false); }} onResult={onResult} />
       </div>
@@ -81,14 +84,14 @@ export function Inbox() {
   const channel = params.get("channel") ?? "";
   const q = params.get("q") ?? "";
   const role = params.get("role") ?? "customer";
-  const selected = params.get("c") ?? "";
-  const set = (changes: Record<string, string>) => { const next = new URLSearchParams(params); for (const [k, v] of Object.entries(changes)) v ? next.set(k, v) : next.delete(k); setParams(next, { replace: true }); };
+  const selected = params.get("conversation") ?? params.get("c") ?? "";
+  const set = (changes: Record<string, string>) => { const next = new URLSearchParams(params); if ("c" in changes) { changes = { ...changes, conversation: changes.c }; next.delete("c"); delete changes.c; } for (const [k, v] of Object.entries(changes)) v ? next.set(k, v) : next.delete(k); setParams(next, { replace: true }); };
   useEffect(() => setPage(1), [state, channel, q, role]);
   const summary = useQuery({ queryKey: ["inbox", "summary"], queryFn: () => get<Summary>("/api/v1/inbox/summary"), retry: false, refetchInterval: 10000 });
   useEffect(() => { const next = summary.data; if (!next) return; if (previous.current && next.revision && previous.current.revision !== next.revision) { setNewMessage(true); void client.invalidateQueries({ queryKey: ["inbox", "list"] }); } previous.current = next; }, [summary.data, client]);
   const list = useQuery({ queryKey: ["inbox", "list", state, channel, q, role, page], queryFn: () => get<{ items: Conv[]; total: number; ready: boolean }>(`/api/v1/inbox/conversations${qs({ state, channel, q, role, page, page_size: 40 })}`), retry: false, placeholderData: keepPreviousData, refetchInterval: 15000 });
   const refresh = () => { void client.invalidateQueries({ queryKey: ["inbox"] }); };
-  return <div className="inbox inbox-ops" data-open={Boolean(selected)}>
+  return <><PageIntro page="inbox" /><p><Link to="/outbox">查看草稿未发送</Link></p><div className="inbox inbox-ops" data-open={Boolean(selected)}>
     <section className="pane listing" aria-label="会话列表">
       <header className="pane-head col"><p className="t-foot">收到询盘，在这里回复客户、找供应商核实，再跟进案子。</p>
         <Segmented label="渠道" value={channel} onChange={(v) => set({ channel: v, c: "" })} options={[{ value: "", label: "全部渠道" }, ...(summary.data?.by_channel ?? []).map((c) => ({ value: c.channel, label: c.label, count: c.waiting || undefined }))]} />
@@ -111,5 +114,5 @@ export function Inbox() {
       </div>
     </section>
     {selected ? <Conversation key={selected} convKey={selected} onBack={() => set({ c: "" })} /> : <section className="pane thread empty-pane" aria-label="对话"><Empty title="选一个会话开始" action={<button className="btn" onClick={refresh}>刷新会话</button>}>点击会话旁的“处理询盘”，核对需求并安排下一步。</Empty></section>}
-  </div>;
+  </div></>;
 }

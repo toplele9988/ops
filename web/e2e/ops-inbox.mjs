@@ -46,7 +46,7 @@ async function mainFlow(name,viewport) {
     await page.getByRole('link',{name:'虚构灯具询盘验收 · 询盘',exact:true}).waitFor(); assert.equal(state.links.length,1);
     await button(page,'关联已有案子').click(); await page.getByLabel('选择案子',{exact:true}).selectOption('7'); await button(dialog(page),'保存').click();
     await page.getByRole('link',{name:'虚构已有案子 · 询盘',exact:true}).waitFor(); assert.equal(state.links.length,2);
-    await button(page,'归到客户').click(); await page.getByLabel('选择客户',{exact:true}).selectOption(otherCustomerKey); await button(page,'确认归属').click();
+    await button(page,'归到客户').click(); await page.getByLabel('选择客户',{exact:true}).selectOption('2'); await button(page,'确认归属').click();
     await page.getByRole('region',{name:'客户资料',exact:true}).getByText('虚构客户乙',{exact:true}).waitFor(); assert.equal(state.conversations[0].customer_key,otherCustomerKey);
     await supplierPreview(page); assert.equal(state.outbox.length,2); assert.equal(state.outbox[1].state,'draft'); assert.ok(state.outbox[1].text.includes(state.messages.at(-1).text));
     await page.getByLabel('供应商询问内容',{exact:true}).fill(state.outbox[1].text+'\n请提供核对结果。'); await button(page,'确认发送给供应商（演练）').click();
@@ -78,7 +78,7 @@ async function failureFlow(name,viewport) {
     state.failContext=true; await button(page,'刷新对话').click(); await profile(page); await page.getByText('没能读到客户与案子',{exact:true}).waitFor();
     state.failContext=false; await button(page,'重新读取').click(); await supplierPreview(page); state.failSupplierSend=true;
     await button(page,'确认发送给供应商（演练）').click(); await page.getByText(/虚构保存结果未确认/).waitFor(); assert.ok(await button(page,'确认发送给供应商（演练）').isDisabled()); assert.equal(state.outbox.filter(r=>r.state==='queued').length,0);
-    await button(dialog(page),'取消').click(); state.failList=true; await page.goto(server.base+'/app/inbox'); await page.getByText('没能读到会话',{exact:true}).waitFor();
+    await button(dialog(page),'取消').click(); state.failList=true; state.delayList=0; await page.goto(server.base+'/app/inbox'); await button(page.getByRole('region',{name:'会话列表',exact:true}),'刷新会话').click(); await page.getByText('没能读到会话',{exact:true}).waitFor();
     state.failList=false; await button(page,'重新读取').click(); await button(page,'处理询盘').waitFor(); await fits(page); assert.deepEqual(problems,[]);
     results.push({name:name+'-failures',passed:true,send_attempts:state.requests.filter(r=>r.body.action==='send').length});
   } catch(e) {await page.screenshot({path:out+name+'-failure-errors.png',fullPage:true}); throw e;} finally {await context.close();}

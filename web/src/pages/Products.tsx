@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -162,6 +163,7 @@ export function Products() {
           <p>每个产品的规格、外箱尺寸、毛重和供应商报价都在这里。系统从资料里抽出的内容先放在「待确认」，你核对后点「确认入库」才算数。没写有效期的报价不会用来报价。</p>
         </div>
       </div>
+      <PageIntro page="products" />
       <div className="toolbar">
         <Segmented label="产品状态" value={status} onChange={(value) => set({ status: value })}
           options={[{ value: "candidate", label: "待确认", count: c?.candidate }, { value: "confirmed", label: "已确认", count: c?.confirmed }, { value: "hidden", label: "已隐藏", count: c?.hidden }]} />

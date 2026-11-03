@@ -55,7 +55,7 @@ class ApiTests(unittest.TestCase):
         return self.data('deals', 'POST', fields=fields)['id']
 
     def test_all_routes_auth_headers_and_post_recheck_before_body_and_write(self):
-        self.assertEqual(len(self.routes), 17)
+        self.assertEqual(len(self.routes), 18)
         for route in self.routes:
             for denied in ({'principal': False}, {'authenticated': False}, {'recheck': False}):
                 response = asyncio.run(route.endpoint(request(ids={'id': '1'}, fields={}, **denied)))

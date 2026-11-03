@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import socket
+import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -254,7 +255,10 @@ def test_rehearsal_automounts_fulfilment_on_disposable_archive(tmp_path, monkeyp
     assert build.call_args.args[1] == str(tmp_path / 'archive.sqlite3')
     assert {'/api/v1/fulfilment/board', '/api/v1/deals/{id}/payments',
             '/api/v1/reorder/leads', '/api/v1/issues/summary'} <= {route.path for route in routes}
-    assert not list(tmp_path.iterdir())
+    assert {p.name for p in tmp_path.iterdir()} == {'archive.sqlite3', 'outbox.sqlite3', 'drafts.sqlite3'}
+    assert not (tmp_path / 'missing-fictional.db').exists()
+    with sqlite3.connect(tmp_path / 'archive.sqlite3') as db:
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='parties_ops_merges'").fetchone()
 
 
 @pytest.fixture

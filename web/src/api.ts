@@ -72,3 +72,7 @@ export async function copyText(text: string): Promise<boolean> {
   area.remove();
   return ok;
 }
+
+/** Read-only projection of unsendable dry-run tables; no mutation is exposed. */
+export interface OpsDraft { id: number; source: "inbox" | "parties"; conversation_key: string; text: string; state: string; dry_run: boolean; created_at: number | string; reviewed_at: string | null }
+export const readOpsDrafts = () => get<{ items: OpsDraft[]; dry_run: boolean }>("/api/v1/ops/drafts");

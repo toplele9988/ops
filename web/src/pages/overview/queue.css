@@ -32,3 +32,5 @@
   .queue-guide { grid-template-columns:minmax(0,1fr); }
   .queue-intro a { align-self:flex-start; }
 }
+
+[data-queue-target="true"] { outline: 3px solid #ac6500; outline-offset: 3px; scroll-margin-top: 90px; }

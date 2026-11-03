@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import { Link } from "react-router";
@@ -30,6 +31,7 @@ export function RolesPage() {
   return (
     <>
       <div className="page-head"><div><h1 className="t-large">AI 员工</h1><p>每个岗位负责什么、最近干了什么活、出了什么问题，都在这里。它们只做整理、提醒和起草，不会替你对外发消息、改价格或推进成交。</p></div></div>
+      <PageIntro page="roles" />
       {roles.isLoading && <Skeleton lines={4} />}
       <div className="group">
         {(roles.data?.items ?? []).map((r) => {

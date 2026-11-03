@@ -92,8 +92,13 @@ class OpsQueue:
                 unavailable.append(label + '暂时读不到，请到对应页面核对后刷新。')
                 return None
 
-        result = archive_read('会话归属', lambda db: {r['conversation_key']: dict(r) for r in db.execute(
-            'SELECT i.conversation_key,p.kind,p.name FROM identities i JOIN parties p ON p.id=i.party_id')})
+        from console.customers.identity import bindings
+        result = archive_read('会话归属', bindings)
+        def workflow_states(db):
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='inbox_workflow'").fetchone():
+                return {}
+            return {r['conversation_key']: dict(r) for r in db.execute('SELECT * FROM inbox_workflow')}
+        states = archive_read('会话处理状态', workflow_states) or {}
         owners.update(result or {})
         for key, conv in conversations.items():
             owner = owners.get(key, {})
@@ -105,6 +110,11 @@ class OpsQueue:
             name = owner.get('name') or conv.get('buyer_name') or '未命名联系人'
             target = inbox_link(key, conv['channel'])
             evidence = [last['sent_at'], last['role'], last.get('text'), role]
+            state = states.get(key, {})
+            from console.inbox.model import message_version as version
+            fresh = state.get('message_version') == version(dict(conv, last_seen=conv.get('last_seen', last['sent_at'])))
+            if fresh and (state.get('status') == 'done' or (state.get('remind_at') or 0) > now):
+                continue
             if role == 'customer' and conv.get('waiting_reply'):
                 add('buyer_reply', key, name, f'买家等了 {age:.0f} 小时，请核对需求并回复。',
                     target, '去回复买家', 2 if age >= 24 else 4, evidence)

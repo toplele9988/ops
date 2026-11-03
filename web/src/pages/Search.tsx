@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
 import { useState } from "react";
@@ -58,6 +59,7 @@ export function Search() {
           <p>用一句话问产品、供应商、历史聊天，答案带来源和时间。{stats.data ? `知识库现有 ${stats.data.chunks.toLocaleString()} 条资料。` : ""}</p>
         </div>
       </div>
+      <PageIntro page="search" />
 
       <form onSubmit={submit} className="ask-box" role="search">
         <label className="field" style={{ flex: 1 }}>

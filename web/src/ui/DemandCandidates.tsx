@@ -26,7 +26,7 @@ function ReviewDemand({ candidate: c, dealId }: { candidate: Candidate; dealId: 
     onError: (e: Error) => toast(e.message, "error"),
   });
   return <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "grid", gap: 10 }}>
-    <div><Chip tone={c.status === "accepted" ? "green" : "orange"}>{c.status === "accepted" ? "已入产品清单" : c.status === "dismissed" ? "已忽略" : "待你确认"}</Chip> <Link to={`/inbox?c=${encodeURIComponent(c.source.conversation_key)}`}>查看来源会话</Link> <span className="t-cap">{formatTime(c.source.sent_at)}</span></div>
+    <div><Chip tone={c.status === "accepted" ? "green" : "orange"}>{c.status === "accepted" ? "已入产品清单" : c.status === "dismissed" ? "已忽略" : "待你确认"}</Chip> <Link to={`/inbox?conversation=${encodeURIComponent(c.source.conversation_key)}`}>查看来源会话</Link> <span className="t-cap">{formatTime(c.source.sent_at)}</span></div>
     {c.source.text && <blockquote style={{ margin: 0, whiteSpace: "pre-wrap" }}>{c.source.text}</blockquote>}
     {c.status === "pending" ? <>
       <div className="form-grid">{Object.entries(FIELDS).map(([key, label]) => <label key={key}><span className="t-foot">{label}</span><input aria-label={label} autoComplete="off" value={fields[key]} onChange={(e) => setFields({ ...fields, [key]: e.target.value })} placeholder="原文没说清的先留空" /></label>)}</div>

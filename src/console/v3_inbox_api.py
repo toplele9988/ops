@@ -68,7 +68,8 @@ def build(app_module, inbound_path=INBOUND_PATH, drafts_path=DRAFTS_PATH, runner
         snapshot = cache.read()
         states = workflow.states()
         customers = aggregate_customers(snapshot['conversations'].values())
-        projected = [(c, workflow.project(c, states, customers)) for c in snapshot['conversations'].values()]
+        owners = workflow.bindings()
+        projected = [(c, workflow.project(c, states, customers, owners)) for c in snapshot['conversations'].values()]
         result['waiting_total'] = sum(p['workflow_state'] == 'waiting' for c, p in projected
                                       if c['counterpart_role'] != 'supplier')
         for channel in result.get('by_channel', []):
@@ -87,8 +88,9 @@ def build(app_module, inbound_path=INBOUND_PATH, drafts_path=DRAFTS_PATH, runner
         values['state'] = 'all'
         rows = []
         customers = aggregate_customers(snapshot['conversations'].values())
+        owners = workflow.bindings()
         for conv in snapshot['conversations'].values():
-            projected = workflow.project(conv, states, customers)
+            projected = workflow.project(conv, states, customers, owners)
             if state != 'all' and projected['workflow_state'] != state:
                 continue
             search = ' '.join(m['text'] for m in conv['messages']) + ' ' + (projected['customer_name'] or '')
@@ -101,7 +103,8 @@ def build(app_module, inbound_path=INBOUND_PATH, drafts_path=DRAFTS_PATH, runner
         state = request.query_params.get('state', 'all')
         from starlette.datastructures import QueryParams
         from .inbox.model import single
-        single(request.query_params, 'state', 'all')
+        for key in request.query_params:
+            single(request.query_params, key)
         pairs = request.query_params.multi_items() if hasattr(request.query_params, 'multi_items') else request.query_params.items()
         params = QueryParams([(k, 'all' if k == 'state' and v == 'done' else v) for k, v in pairs])
         values = parameters(params)

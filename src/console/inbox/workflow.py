@@ -14,7 +14,8 @@ from console.archive import validation as v
 from console.customers import aggregate_customers, public_customer
 from console.deals.service import Deals
 from console.deals import validation as dv
-from console.inbox.model import make_key
+from console.inbox.model import make_key, message_version as version
+from console.customers.identity import bindings, canonical
 from console.outbox.dry_run import DryRun
 
 SCHEMA = (
@@ -25,13 +26,6 @@ SCHEMA = (
      request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL)''',
 )
 
-
-def version(conv):
-    last = conv['messages'][-1] if conv['messages'] else {}
-    # List and detail adapters can expose different history lengths. Use source
-    # last_seen and the last message, not the lazily loaded history count.
-    return hashlib.sha256(json.dumps([conv['last_seen'], last.get('text'), last.get('role')],
-                                     ensure_ascii=False).encode()).hexdigest()
 
 
 def text(fields, name, limit=4000, required=True):
@@ -52,7 +46,11 @@ class Workflow:
                 return {}
             return {r['conversation_key']: dict(r) for r in db.execute('SELECT * FROM inbox_workflow')}
 
-    def project(self, conv, states=None, customers=None):
+    def bindings(self):
+        with self.store.read() as db:
+            return bindings(db)
+
+    def project(self, conv, states=None, customers=None, owners=None):
         state = (self.states() if states is None else states).get(conv['key'], {})
         fresh = state.get('message_version') == version(conv)
         remind = state.get('remind_at') if fresh else None
@@ -63,6 +61,9 @@ class Workflow:
         if customers is None:
             customers = aggregate_customers(self.inbox.read()['conversations'].values())
         customer = customers.get(customer_key)
+        owner = (self.bindings() if owners is None else owners).get(conv['key'])
+        if owner and owner['kind'] == 'customer':
+            return dict(workflow_state=status, remind_at=remind, reminder_due=due, customer_key=customer_key if customer else None, customer_party_id=owner['id'], customer_name=owner['name'])
         return dict(workflow_state=status, remind_at=remind, reminder_due=due,
                     customer_key=customer_key if customer else None,
                     customer_name=customer['buyer_name'] if customer else None)
@@ -74,10 +75,15 @@ class Workflow:
         customers = aggregate_customers(self.inbox.read()['conversations'].values())
         customer = customers.get(p['customer_key'])
         linked = self.deals.read('by_conversation', {'key': key})
+        party = linked['party']
+        if party and party['kind'] == 'customer':
+            owners = self.bindings()
+            convs = [c for k, c in self.inbox.read()['conversations'].items() if owners.get(k, {}).get('id') == party['id']]
+            customer = dict(key=str(party['id']), party_id=party['id'], buyer_name=party['name'], country=party.get('country') or '', channel=conv['channel'], account=conv['account'], n_conversations=len(convs), n_messages=sum(c['n_messages'] for c in convs), last_seen=max((c['last_seen'] for c in convs), default=conv['last_seen']))
         suppliers = [dict(key=c['key'], buyer_name=c['buyer_name'], channel_label=c['channel_label'])
                      for c in self.inbox.read()['conversations'].values()
                      if c['counterpart_role'] == 'supplier' and c.get('draft_eligible', True)]
-        return dict(**p, customer=public_customer(customer, detail=True) if customer else None,
+        return dict(**p, customer=customer if party and party['kind'] == 'customer' else public_customer(customer, detail=True) if customer else None,
                     deals=linked['deals'], party=linked['party'], suppliers=suppliers,
                     outbox=self.outbox.recent(key), dry_run=True)
 
@@ -123,7 +129,7 @@ class Workflow:
 
     def action(self, key, fields, who):
         v.whitelist(fields, ('action', 'request_id', 'text', 'confirm', 'dry_run', 'customer_key',
-                             'title', 'deal_id', 'remind_at', 'supplier_key', 'draft_id'))
+                             'title', 'deal_id', 'remind_at', 'supplier_key', 'draft_id', 'customer_party_id'))
         request_id = self.request_id(fields)
         conv = self.require(key)
         action = fields.get('action')
@@ -178,20 +184,30 @@ class Workflow:
                 result['notice'] = {'done': '已标记已处理，新消息到达会再次提醒',
                                     'reopen': '已恢复跟进', 'remind': '提醒已记下，到时会回到要我回复'}[action]
             elif action == 'assign':
-                customers = aggregate_customers(self.inbox.read()['conversations'].values())
-                customer = customers.get(fields.get('customer_key'))
-                if not customer:
-                    raise v.BadRequest('请选择客户列表中的客户')
-                old_party = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone()
-                party = db.execute("SELECT id FROM parties WHERE kind='customer' AND name=?", (customer['buyer_name'],)).fetchone()
-                party_id = party['id'] if party else insert(db, 'parties', dict(kind='customer', name=customer['buyer_name'],
-                    short_name=customer['buyer_name'], country=customer['country'], created_at=stamp, updated_at=stamp), who)
-                if old_party and old_party['party_id'] != party_id and fields.get('confirm') != '1':
-                    raise v.Conflict('更换归属会同步更新案子内会话归属，请确认后保存')
-                self.deals._identity(db, key, party_id, who, stamp, fields.get('confirm') == '1')
+                if fields.get('customer_party_id'):
+                    from console.archive.service import get
+                    party_id = canonical(db, dv.identity(fields['customer_party_id']))
+                    party = get(db, 'parties', party_id)
+                    if party['kind'] != 'customer' or party['status'] != 'active':
+                        raise v.BadRequest('请选择有效客户')
+                    name = party['name']
+                    customer_key = None
+                else:
+                    customers = aggregate_customers(self.inbox.read()['conversations'].values())
+                    customer = customers.get(fields.get('customer_key'))
+                    if not customer:
+                        raise v.BadRequest('请选择客户列表中的客户')
+                    name, customer_key = customer['buyer_name'], customer['key']
+                    party = db.execute("SELECT id FROM parties WHERE kind='customer' AND name=?", (name,)).fetchone()
+                    party_id = canonical(db, party['id']) if party else insert(db, 'parties', dict(kind='customer', name=name,
+                        short_name=name, country=customer['country'], created_at=stamp, updated_at=stamp), who)
+                old = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone()
+                # Linking to the displayed canonical customer must not move the original FK.
+                if not old or canonical(db, old['party_id']) != party_id:
+                    self.deals._identity(db, key, party_id, who, stamp, fields.get('confirm') == '1')
                 db.execute('UPDATE inbox_workflow SET customer_key=?,updated_at=? WHERE conversation_key=?',
-                           (customer['key'], self.clock(), key))
-                result['notice'] = '会话已归到' + customer['buyer_name']
+                           (customer_key, self.clock(), key))
+                result['notice'] = '会话已归到' + name
             elif action == 'create_deal':
                 # Repeated intent, including a refreshed browser, must not create
                 # multiple open deals from the same source conversation.

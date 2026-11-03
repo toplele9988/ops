@@ -37,7 +37,7 @@ function WaitingEntry({ item, dealId, refresh }: { item: WaitingItem; dealId: nu
   const warning = !!draft && (draft.warnings?.some((w) => w.kind === "error") || draft.validation?.ok === false || draft.back_validation?.ok === false);
   return <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "grid", gap: 10 }}>
     <div><Chip tone={!active ? "green" : item.waiting_on === "us" ? "red" : "orange"}>{!active ? "已办完" : direction(item.waiting_on)}</Chip> <strong>{item.title}</strong></div>
-    <div className="t-foot">{ROLE[item.role] ?? "原参与方"} · {item.party_name} · <Link to={`/inbox?c=${encodeURIComponent(item.conversation_key)}`}>查看具体会话</Link></div>
+    <div className="t-foot">{ROLE[item.role] ?? "原参与方"} · {item.party_name} · <Link to={`/inbox?conversation=${encodeURIComponent(item.conversation_key)}`}>查看具体会话</Link></div>
     <div className="t-foot">从 {formatTime(item.since)} 开始 · {item.elapsed} · 上次催问：{item.last_reminded_at ? formatTime(item.last_reminded_at) : "尚未登记"}</div>
     <div className="t-cap">{item.availability_text}</div>
     {active && <>
@@ -47,7 +47,7 @@ function WaitingEntry({ item, dealId, refresh }: { item: WaitingItem; dealId: nu
         <button type="button" className="btn" disabled={action.isPending} onClick={() => setRecording(!recording)}>人工记录已催问</button>
         <button type="button" className="btn" disabled={action.isPending} onClick={() => { if (window.confirm("这件事已经办完？确认后结束该项等待。")) action.mutate({ op: "resolve", fields: {} }); }}>这件事已办完</button>
       </div>
-      {recording && <div style={{ display: "grid", gap: 8 }}><p className="t-foot">仅在你已经自行联系对方后登记。这里只记时间，不发送；原事项的等待起点保持不变。</p><label className="t-foot">实际催问时间<input aria-label="实际催问时间" type="datetime-local" value={reminderAt} onChange={(e) => setReminderAt(e.target.value)} /></label><button type="button" className="btn" disabled={action.isPending || !reminderAt} onClick={() => action.mutate({ op: "remind", fields: { request_id: requestId, at: new Date(reminderAt).toISOString() } })}>确认登记实际催问时间</button></div>}
+      {recording && <div style={{ display: "grid", gap: 8 }}><p className="t-foot">仅在你已经自行联系对方后登记。这里只记时间，不发送；原事项的等待起点保持不变。</p><label className="t-foot">实际催问时间（北京时间）<input aria-label="实际催问时间" type="datetime-local" value={reminderAt} onChange={(e) => setReminderAt(e.target.value)} /></label><button type="button" className="btn" disabled={action.isPending || !reminderAt} onClick={() => action.mutate({ op: "remind", fields: { request_id: requestId, at: new Date(reminderAt + "+08:00").toISOString() } })}>确认登记实际催问时间</button></div>}
     </>}
     {draft && <div className="group" style={{ padding: 12, display: "grid", gap: 10 }}>
       <strong>催问草稿 · {draft.native_language} · {draft.contact?.locked ? "语言已人工锁定" : "请核对识别出的语言"}</strong>
@@ -83,7 +83,7 @@ export function WaitingPanel({ dealId }: { dealId: number }) {
   }), retry: false, onSuccess: () => { refresh(); setTitle(""); setSince(""); toast("已登记这件事的等待"); }, onError: (e: Error) => toast(e.message, "error") });
   return <div className="block"><h2 className="group-title">现在在等谁、等哪件事</h2><p className="t-foot">会话方向只说明谁最后说了话。具体事项请单独登记；其他会话的新消息、起草催问、登记催问都不会重置原等待。</p>
     {q.isLoading ? <Skeleton /> : q.isError ? <WorkflowError message={`等待情况没读到：${q.error.message}`} refresh={() => q.refetch()} /> : <div className="group">
-      {q.data?.participants.map((p) => <div key={p.party_id} style={{ padding: 16, borderBottom: "1px solid var(--line)" }}><strong>{ROLE[p.role]} · {p.name}</strong><div className="t-foot">{p.availability_text}</div>{p.conversations.map((c) => <div key={c.key} className="t-foot" style={{ marginTop: 8 }}><Link to={`/inbox?c=${encodeURIComponent(c.key)}`}>{c.title}</Link> · {direction(c.state)} · {c.availability_text}{c.since ? ` · 起点 ${formatTime(c.since)}` : ""}{c.last_reminded_at ? ` · 上次催问 ${formatTime(c.last_reminded_at)}` : ""}</div>)}</div>)}
+      {q.data?.participants.map((p) => <div key={p.party_id} style={{ padding: 16, borderBottom: "1px solid var(--line)" }}><strong>{ROLE[p.role]} · {p.name}</strong><div className="t-foot">{p.availability_text}</div>{p.conversations.map((c) => <div key={c.key} className="t-foot" style={{ marginTop: 8 }}><Link to={`/inbox?conversation=${encodeURIComponent(c.key)}`}>{c.title}</Link> · {direction(c.state)} · {c.availability_text}{c.since ? ` · 起点 ${formatTime(c.since)}` : ""}{c.last_reminded_at ? ` · 上次催问 ${formatTime(c.last_reminded_at)}` : ""}</div>)}</div>)}
       {q.data?.items.map((item) => <WaitingEntry key={item.id} item={item} dealId={dealId} refresh={refresh} />)}
       {q.data?.items.length === 0 && <p className="t-sub" style={{ padding: 16 }}>还没有登记具体事项。选择对象和会话，把正在等的报价、交期、包装或付款说明写下来。</p>}
       <div style={{ padding: 16, display: "grid", gap: 10 }}>

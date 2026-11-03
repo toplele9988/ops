@@ -5,11 +5,15 @@ import { checkOverview } from "./overview.mjs";
 
 import assert from "node:assert/strict";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
-import { installFixtures } from "./fixtures.mjs";
+import { installFixtures, conversationKey, supplierKey } from "./fixtures.mjs";
 import { startLocalServer } from "./local-server.mjs";
 
 // Always serve this workspace's build and intercept every API with fictional fixtures.
 // BASE is deliberately not accepted: this acceptance run cannot contact production.
+if (process.env.IMGW_REHEARSAL === '1' && process.env.BASE) {
+  const { runRehearsal } = await import('./rehearsal.mjs');
+  process.exit(await runRehearsal());
+}
 const server = await startLocalServer();
 const BASE = server.base;
 const CHROME = process.env.CHROME;
@@ -61,9 +65,9 @@ const PAGES = [
   ["灵感库", "/inspiration"], ["怎么用", "/guide"], ["待整理会话", "/triage"], ["AI 员工", "/roles"], ["微信通讯录", "/directory"], ["数据体检", "/audit"], ["价格建议", "/prices"], ["备货与发货", "/fulfilment"], ["微信通讯录-没接入", "/directory?state=not_enrolled"], ["需求与验收", "/requirements"],
   ["系统总览", "/system"], ["渠道接入", "/system/channels"], ["数据管道健康", "/system/pipeline"], ["阿里订单接入", "/system/alibaba-open"], ["待分类", "/classify"], ["语言设置", "/system/language"], ["知识中枢", "/system/knowledge"], ["旧版工具", "/system/legacy"],
   ["规划报价保留页", "/quotes"], ["规划发品保留页", "/listing"], ["规划分类保留页", "/system/classify"], ["规划模型保留页", "/system/models"],
-  ["客户资料", "/customers?c=demo-customer"], ["供应商资料", "/suppliers?party=1"],
-  ["会话-客户", "/inbox?c=demo-alibaba"], ["会话-微信", "/inbox?channel=wechat&role=all&c=demo-wechat"],
-  ["案子页", "/deals/1"], ["报价页", "/quotes/1"], ["产品详情", "/products?status=candidate&open=1"],
+  ["客户资料", "/customers/1"], ["供应商资料", "/suppliers/3"],
+  ["会话-客户", `/inbox?conversation=${conversationKey}`], ["会话-微信", `/inbox?channel=wechat&role=all&conversation=${supplierKey}`],
+  ["草稿未发送", "/outbox"], ["案子页", "/deals/1"], ["报价页", "/quotes/1"], ["产品详情", "/products?status=candidate&open=1"],
 ];
 const VIEWPORTS = [["桌面", { width: 1440, height: 900 }], ["手机", { width: 400, height: 860 }]];
 
@@ -96,13 +100,13 @@ for (const [vname, viewport] of VIEWPORTS) {
       await page.goto(BASE + "/app" + path, { waitUntil: "load" });
       await page.waitForTimeout(WAIT);
       await checkNavigation(page, path, viewport);
-      if (path.startsWith("/inbox?") && path.includes("c=")) {
+      if (path.startsWith("/inbox?") && (path.includes("c=") || path.includes("conversation="))) {
         await page.locator(".thread-body .bubble").first().waitFor();
         if (viewport.width <= 900) {
-          const toggle = page.getByRole("button", { name: "查看资料与 AI 建议" });
+          const toggle = page.getByRole("button", { name: "客户资料与 AI 建议 · 展开操作" });
           await toggle.click();
           assert.equal(await page.locator("#conversation-profile").isVisible(), true);
-          await page.getByRole("button", { name: "收起资料与 AI 建议" }).click();
+          await page.getByRole("button", { name: "收起客户资料和操作" }).click();
           assert.equal(await page.locator("#conversation-profile").isVisible(), false);
         } else {
           const boxes = await Promise.all([".listing", ".thread", ".side"].map((selector) => page.locator(selector).boundingBox()));
@@ -110,8 +114,8 @@ for (const [vname, viewport] of VIEWPORTS) {
         }
       }
       if (path === "/deals") assert.equal(await page.getByRole("region", { name: "销售管道看板" }).isVisible(), true);
-      if (path === "/customers?c=demo-customer") assert.match(await page.locator(".contact-timeline").innerText(), /外箱尺寸/);
-      if (path === "/suppliers?party=1") assert.match(await page.locator(".contact-timeline").innerText(), /2026-11-01/);
+      if (path === "/customers/1") assert.match(await page.locator(".contact-timeline").innerText(), /虚构产品报价/);
+      if (path === "/suppliers/3") assert.match(await page.locator(".contact-timeline").innerText(), /虚构产品报价/);
       if (path === "/") {
         assert.equal(await page.getByRole("heading", { name: "全局总览", exact: true }).isVisible(), true);
         for (const text of ["今日运营", "今日成交简报", "等你回复的买家", "供应商资料待补", "成交结果"]) {
@@ -130,7 +134,7 @@ for (const [vname, viewport] of VIEWPORTS) {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       if (overflow > 2) problems.push(`页面横向溢出 ${overflow}px`);
       if (consoleNotFound > missingMedia) problems.push(`有 ${consoleNotFound - missingMedia} 个资源 404（不是未归档的图片）`);
-      if (OUT) await page.screenshot({ path: `${OUT}/${vname}-${name.replace(/[^\w一-龥-]/g, "_")}.png`, fullPage: ["/", "/deals", "/customers?c=demo-customer", "/suppliers?party=1"].includes(path) });
+      if (OUT) await page.screenshot({ path: `${OUT}/${vname}-${name.replace(/[^\w一-龥-]/g, "_")}.png`, fullPage: ["/", "/deals", "/customers/1", "/suppliers/3"].includes(path) });
     } catch (error) {
       problems.push("打开失败：" + String(error).slice(0, 140));
     }

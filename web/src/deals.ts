@@ -15,7 +15,7 @@ export const STATUS_TEXT: Record<string, { text: string; tone: Tone }> = {
 
 export interface Participant { id?: number; party_id: number; name: string; role: string; state: "us" | "them" | "none"; last_at: number | null; note?: string | null; conversations?: { key: string; channel_label: string; title: string; last_role: string; last_at: number }[] }
 export interface DealRow {
-  id: number; title: string; customer: { id: number; name: string } | null; stage: string; stage_label: string; status: string;
+  id: number; title: string; customer: { id: number; name: string; country?: string; timezone?: string } | null; stage: string; stage_label: string; status: string;
   value: string | null; currency: string; next_action?: string | null; next_action_due?: string | null; last_activity_at: number | null;
   participants: Participant[]; waiting_on_us: boolean; waiting_on: string[]; overdue: string[]; needs_attention: boolean; open_tasks: number;
 }

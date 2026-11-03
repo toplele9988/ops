@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { useLocation } from "react-router";
 import { findNav } from "../nav";
 import { Empty } from "../ui/bits";
@@ -14,6 +15,7 @@ export function Soon() {
           <p>还没接入。下面说明它做好后能帮你做什么，以及现在缺什么。</p>
         </div>
       </div>
+      <PageIntro text="查看这项功能的目标和当前缺口，先处理现有待办。" />
       <div className="group">
         <div className="row"><div className="row-main"><div className="row-title">做好后能做什么</div><div className="row-sub">{item.purpose}</div></div></div>
         <div className="row"><div className="row-main"><div className="row-title">现在的情况</div><div className="row-sub">{item.needs}</div></div></div>

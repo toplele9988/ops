@@ -1,17 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { get, postForm, qs } from "../api";
 import { formatTime } from "../format";
 import { Empty, Sheet, Skeleton } from "./bits";
 import { useToast } from "./Toast";
+import { PageIntro } from "../pages/overview/PageIntro";
+import { CounterpartTime } from "./CounterpartTime";
 import "./parties.css";
 
 type Kind = "customer" | "supplier" | "forwarder" | "vendor";
 const KINDS: Record<Kind, string> = { customer: "客户", supplier: "供应商", forwarder: "货代", vendor: "配套供应商" };
 const TERMS: Record<string, string> = { lead_time: "交货周期", moq: "起订量", payment: "付款方式", shipping_origin: "发货地", warranty: "质保", contact_note: "联系备注" };
 const CHANNELS: Record<string, string> = { alibaba: "阿里国际站", wechat: "微信", whatsapp: "WhatsApp", website: "独立站", email: "邮箱" };
-interface Contact { id: number; kind: Kind; name: string; country: string; notes: string; tags: string; next_followup: string | null; last_contact: number | null; channels: string[]; todo_count: number; open_deals: number }
+interface Contact { id: number; kind: Kind; name: string; country: string; timezone?: string; notes: string; tags: string; next_followup: string | null; last_contact: number | null; channels: string[]; todo_count: number; open_deals: number }
 interface Listing { items: Contact[]; total: number; countries: string[]; channels: string[] }
 interface Conversation { key: string; channel: string; name: string; party_id?: number | null }
 interface Draft { id: number; conversation_key: string; text: string; reviewed_at: string | null; dry_run: number; state: string }
@@ -31,11 +33,13 @@ export function PartiesWorkbench({ initialKind }: { initialKind: "customer" | "s
   const client = useQueryClient();
   const toast = useToast();
   const [params, setParams] = useSearchParams();
+  const { id: routeId } = useParams();
+  const navigate = useNavigate();
   const latestParams = useRef(params);
   latestParams.current = params;
   const kind = (initialKind === "supplier" && ["forwarder", "vendor"].includes(params.get("kind") ?? "") ? params.get("kind") : initialKind) as Kind;
   const selectedKey = initialKind === "customer" ? "c" : "party";
-  const chosen = params.get(selectedKey) ?? "";
+  const chosen = params.get(selectedKey) ?? routeId ?? "";
   const [adding, setAdding] = useState(false);
   const [createKind, setCreateKind] = useState<Kind>(kind);
   const [name, setName] = useState("");
@@ -49,7 +53,8 @@ export function PartiesWorkbench({ initialKind }: { initialKind: "customer" | "s
     const next = new URLSearchParams(latestParams.current);
     for (const [key, value] of Object.entries(changes)) value ? next.set(key, value) : next.delete(key);
     latestParams.current = next;
-    setParams(next);
+    if (routeId && selectedKey in changes) navigate(`${initialKind === "customer" ? "/customers" : "/suppliers"}?${next}`);
+    else setParams(next);
   };
   const filters = Object.fromEntries(["q", "country", "channel", "contact", "open", "sort", "page"].map(key => [key, params.get(key) ?? ""]));
   const list = useQuery({ queryKey: ["parties-ops", "list", kind, filters], queryFn: () => get<Listing>(API + qs({ ...filters, kind, page_size: 40 })), retry: false });
@@ -78,6 +83,7 @@ export function PartiesWorkbench({ initialKind }: { initialKind: "customer" | "s
   };
   return <div className="parties-workbench">
     <div className="page-head"><div><h1 className="t-large">{KINDS[kind]}</h1><p>把会话归到同一家，安排跟进、核对资料，再把生意推进到案子。</p></div><button className="btn primary" onClick={() => { setCreateKind(kind); setAdding(true); }}>新建往来单位</button></div>
+    <PageIntro page={initialKind === "customer" ? "customers" : "suppliers"} />
     <p className="parties-notice">消息均保存为演练草稿（dry-run），由人核对，尚未发送。</p>
     {feedback && <div role="status" className="parties-feedback">{feedback}{lastDeal && <Link to={`/deals/${lastDeal}`}>查看新案子</Link>}</div>}
     {error && <div role="alert" className="parties-error">{error}<button className="btn sm" onClick={() => { action.reset(); setError(""); }}>收起提示</button></div>}
@@ -119,7 +125,7 @@ export function PartiesWorkbench({ initialKind }: { initialKind: "customer" | "s
 function ContactDetail({ id, onBack, mutate, pending, error, conversations }: { id: string; onBack: () => void; mutate: (path: string, fields: Record<string, string>, success?: (r: Result) => void) => void; pending: boolean; error: string; conversations: Conversation[] }) {
   const detail = useQuery({ queryKey: ["parties-ops", "detail", id], queryFn: () => get<Detail>(`${API}/${encodeURIComponent(id)}`), retry: false });
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: "", country: "", notes: "", tags: "", next_followup: "" });
+  const [form, setForm] = useState({ name: "", country: "", timezone: "", notes: "", tags: "", next_followup: "" });
   const [linkKey, setLinkKey] = useState("");
   const [draftKey, setDraftKey] = useState("");
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -144,15 +150,15 @@ function ContactDetail({ id, onBack, mutate, pending, error, conversations }: { 
   };
   return <article aria-label={`${p.name}资料`}>
     <button className="btn plain back" onClick={onBack}>返回{KINDS[p.kind]}列表</button>
-    <section className="group parties-card"><h2 className="t-title">{p.name}</h2><p>{p.country || "国家未填"} · 待办 {p.todo_count} 项 · 下次跟进：{p.next_followup || "待安排"}</p><p>标签：{p.tags || "暂无"}</p><p className="parties-wrap">备注：{p.notes || "暂无"}</p>
+    <section className="group parties-card"><h2 className="t-title">{p.name}</h2><CounterpartTime country={p.country} timezone={p.timezone} /><p>{p.country || "国家未填"} · 待办 {p.todo_count} 项 · 下次跟进：{p.next_followup || "待安排"}</p><p>标签：{p.tags || "暂无"}</p><p className="parties-wrap">备注：{p.notes || "暂无"}</p>
       {p.merged_profiles.map(m => <p key={m.name} className="parties-wrap">已合入 {m.name} · 原标签：{m.tags || "暂无"} · 原备注：{m.notes || "暂无"}</p>)}
-      <div className="parties-actions"><button className="btn" onClick={() => { setForm({ name: p.name, country: p.country, notes: p.notes, tags: p.tags, next_followup: p.next_followup ?? "" }); setEditing(true); }}>编辑资料与跟进日期</button>
-        {p.kind === "customer" && <><button className="btn" onClick={() => setMergeOpen(true)}>合并重复客户</button><button className="btn" onClick={() => { setTitle(`${p.name}的采购需求`); setDealOpen(true); }}>转为案子</button></>}
+      <div className="parties-actions"><button className="btn" onClick={() => { setForm({ name: p.name, country: p.country, timezone: p.timezone ?? "", notes: p.notes, tags: p.tags, next_followup: p.next_followup ?? "" }); setEditing(true); }}>编辑资料与跟进日期</button>
+        {p.kind === "customer" && <><button className="btn" onClick={() => setMergeOpen(true)}>合并重复客户</button><button className="btn" onClick={() => { setTitle(`${p.name}的采购需求`); setDealOpen(true); }}>转为案子</button><Link className="btn" to={"/deals" + qs({ new: "1", customer: p.id, destination_country: p.country })}>新建案子（填写产品）</Link></>}
       </div>
     </section>
     <section className="block"><h3 className="group-title">渠道身份与现有会话</h3><div className="group parties-card">
       {p.identities.length === 0 && <p>还没有关联会话；先选择下方已有会话，再开始跟进。</p>}
-      {p.identities.map(i => <div className="row parties-row" key={i.key}><div className="row-main parties-wrap">{CHANNELS[i.channel] ?? i.channel} · {i.name}</div><Link className="btn sm" to={`/inbox?c=${encodeURIComponent(i.key)}`}>查看会话</Link></div>)}
+      {p.identities.map(i => <div className="row parties-row" key={i.key}><div className="row-main parties-wrap">{CHANNELS[i.channel] ?? i.channel} · {i.name}</div><Link className="btn sm" to={`/inbox?conversation=${encodeURIComponent(i.key)}&role=all`}>查看会话</Link></div>)}
       <div className="parties-actions"><Pick label="待关联会话" value={linkKey} onChange={setLinkKey} options={[["", "选择一个现有会话"], ...conversations.filter(c => !c.party_id).map(c => [c.key, `${CHANNELS[c.channel] ?? c.channel} · ${c.name}`] as [string, string])]} /><button className="btn" disabled={!linkKey || pending} onClick={() => act("link", { conversation_key: linkKey }, () => setLinkKey(""))}>关联到本单位</button></div>
       {p.identities.length > 0 && <Pick label="草稿发往会话" value={actionKey} onChange={setDraftKey} options={p.identities.map(i => [i.key, `${CHANNELS[i.channel] ?? i.channel} · ${i.name}`])} />}
       <div className="parties-actions">{p.kind === "customer" ? <button className="btn primary" disabled={pending} onClick={() => makeDraft("followup")}>一键起草跟进</button> : <><button className="btn primary" disabled={pending} onClick={() => makeDraft("inquiry")}>一键询价</button><button className="btn" disabled={pending} onClick={() => makeDraft("materials")}>催资料</button></>}</div>
@@ -171,9 +177,9 @@ function ContactDetail({ id, onBack, mutate, pending, error, conversations }: { 
     </div></section>}
     <section className="block"><h3 className="group-title">关联案子</h3><div className="group">{p.deals.map(d => <div className="row parties-row" key={d.id}><span className="row-main">{d.title} · {({ open: "进行中", paused: "暂停", won: "已成交", lost: "已丢单" } as Record<string, string>)[d.status] ?? d.status}</span><Link className="btn sm" to={`/deals/${d.id}`}>推进案子</Link></div>)}{p.deals.length === 0 && <Empty title="还没有关联案子" action={p.kind === "customer" ? <button className="btn" onClick={() => { setTitle(`${p.name}的采购需求`); setDealOpen(true); }}>新建采购案子</button> : <Link className="btn" to="/deals">去案子关联参与方</Link>} />}</div></section>
     <section className="block"><h3 className="group-title">演练发件箱草稿</h3><div className="group">{p.drafts.map(d => <div className="parties-product" key={d.id}><p className="parties-wrap">{d.text}</p><p>演练（dry-run） · {d.reviewed_at ? "人工已核对" : "待人工核对"} · 尚未发送</p><button className="btn sm" onClick={() => { setDraft({ id: d.id, text: d.text }); setDraftOpen(true); }}>编辑并人工核对草稿</button></div>)}{p.drafts.length === 0 && <p className="parties-card">还没有草稿，可点击上方跟进或询价按钮。</p>}</div></section>
-    <section className="block" aria-label="往来时间线"><h3 className="group-title">全部往来时间线</h3><div className="group"><ol className="contact-timeline">{p.timeline.map(e => <li key={e.id}><time>{formatTime(e.at)}</time><span>{CHANNELS[e.channel] ?? e.channel} · {e.role === "buyer" ? "对方" : e.role === "seller" ? "我方" : "记录"}</span><p className="parties-wrap">{e.summary || "附件或空消息，请进入会话查看"}</p>{e.conversation_key && <Link className="btn sm" to={`/inbox?c=${encodeURIComponent(e.conversation_key)}`}>查看并回复</Link>}</li>)}{p.timeline.length === 0 && <li>还没有往来记录。<Link to="/inbox">去商机沟通关联会话</Link></li>}</ol></div></section>
+    <section className="block" aria-label="往来时间线"><h3 className="group-title">全部往来时间线</h3><div className="group"><ol className="contact-timeline">{p.timeline.map(e => <li key={e.id}><time>{formatTime(e.at)}</time><span>{CHANNELS[e.channel] ?? e.channel} · {e.role === "buyer" ? "对方" : e.role === "seller" ? "我方" : "记录"}</span><p className="parties-wrap">{e.summary || "附件或空消息，请进入会话查看"}</p>{e.conversation_key && <Link className="btn sm" to={`/inbox?conversation=${encodeURIComponent(e.conversation_key)}`}>查看并回复</Link>}</li>)}{p.timeline.length === 0 && <li>还没有往来记录。<Link to="/inbox">去商机沟通关联会话</Link></li>}</ol></div></section>
     {p.merges.length > 0 && <section className="block"><h3 className="group-title">合并与撤销记录</h3><div className="group">{p.merges.map(m => <div className="row parties-row" key={m.id}><span className="row-main">{m.source_name} · {formatTime(m.at)} · {m.undone_at ? "已撤销" : "已合入"}</span>{!m.undone_at && <button className="btn sm" disabled={pending} onClick={() => { if (window.confirm("撤销后恢复两位客户独立展示；合并期间新增记录留在保留客户名下。确认撤销？")) act("undo", { merge_id: String(m.id), confirm: "1" }); }}>撤销这次合并</button>}</div>)}</div></section>}
-    <Sheet open={editing} title="编辑资料与跟进日期" onClose={() => setEditing(false)}><div className="parties-form"><Field label="单位名称" value={form.name} onChange={name => setForm({ ...form, name })} /><Field label="所在国家" value={form.country} onChange={country => setForm({ ...form, country })} maxLength={100} /><Field label="标签（逗号分隔）" value={form.tags} onChange={tags => setForm({ ...form, tags })} maxLength={300} /><Field label="下次跟进日期" type="date" value={form.next_followup} onChange={next_followup => setForm({ ...form, next_followup })} /><label className="parties-field">备注<textarea rows={4} maxLength={2000} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></label>{error && <p role="alert">{error}</p>}<div className="sheet-actions"><button className="btn" onClick={() => setEditing(false)}>取消</button><button className="btn primary" disabled={pending || !form.name.trim()} onClick={() => act("update", form, () => setEditing(false))}>保存资料</button></div></div></Sheet>
+    <Sheet open={editing} title="编辑资料与跟进日期" onClose={() => setEditing(false)}><div className="parties-form"><Field label="单位名称" value={form.name} onChange={name => setForm({ ...form, name })} /><Field label="所在国家" value={form.country} onChange={country => setForm({ ...form, country })} maxLength={100} /><Field label="对方时区（IANA，可留空）" value={form.timezone} onChange={timezone => setForm({ ...form, timezone })} maxLength={100} /><Field label="标签（逗号分隔）" value={form.tags} onChange={tags => setForm({ ...form, tags })} maxLength={300} /><Field label="下次跟进日期" type="date" value={form.next_followup} onChange={next_followup => setForm({ ...form, next_followup })} /><label className="parties-field">备注<textarea rows={4} maxLength={2000} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></label>{error && <p role="alert">{error}</p>}<div className="sheet-actions"><button className="btn" onClick={() => setEditing(false)}>取消</button><button className="btn primary" disabled={pending || !form.name.trim()} onClick={() => act("update", form, () => setEditing(false))}>保存资料</button></div></div></Sheet>
     <Sheet open={mergeOpen} title="合并重复客户" onClose={() => setMergeOpen(false)}><p>保留“{p.name}”。另一位客户的身份、往来与案子合并展示；原资料保留，可在合并记录中撤销。</p><p>合并期间新增记录归保留客户，撤销时仍留在保留客户。</p><Field label="搜索重复客户" value={duplicateQuery} onChange={v => { setDuplicateQuery(v); setSource(""); }} /><Pick label="要合入的客户" value={source} onChange={setSource} options={[["", "请选择重复客户"], ...(duplicateList.data?.items ?? []).filter(c => c.id !== p.id).map(c => [String(c.id), c.name] as [string, string])]} />{duplicateList.data && duplicateList.data.total > 100 && <p>符合条件的客户超过100位，请在上方缩小搜索范围再选择。</p>}{duplicateList.isError && <p role="alert">候选客户读取失败<button className="btn" onClick={() => duplicateList.refetch()}>重试</button></p>}{error && <p role="alert">{error}</p>}<div className="sheet-actions"><button className="btn" onClick={() => setMergeOpen(false)}>取消</button><button className="btn primary" disabled={!source || pending} onClick={() => { if (window.confirm(`将选中的重复客户合入“${p.name}”，会话和案子将统一展示，可撤销。确认合并？`)) act("merge", { source_id: source, confirm: "1" }, () => { setMergeOpen(false); setSource(""); }); }}>确认合并客户</button></div></Sheet>
     <Sheet open={dealOpen} title="转为案子" onClose={() => setDealOpen(false)}><Field label="案子名称" value={title} onChange={setTitle} /><p>会生成询盘待办，带入客户与已关联会话。</p>{error && <p role="alert">{error}</p>}<div className="sheet-actions"><button className="btn" onClick={() => setDealOpen(false)}>取消</button><button className="btn primary" disabled={!title.trim() || pending} onClick={() => act("deal", { title }, () => setDealOpen(false))}>创建采购案子</button></div></Sheet>
     <Sheet open={draftOpen} title="人工核对演练草稿" onClose={() => setDraftOpen(false)}><p>演练（dry-run）：只存草稿，确认后也不会外发。</p><label className="parties-field">消息内容<textarea rows={7} maxLength={2000} value={draft?.text ?? ""} onChange={e => setDraft(draft ? { ...draft, text: e.target.value } : undefined)} /></label>{error && <p role="alert">{error}</p>}<div className="sheet-actions"><button className="btn" onClick={() => setDraftOpen(false)}>稍后核对</button><button className="btn primary" disabled={pending || !draft?.text.trim()} onClick={() => { if (draft && window.confirm("确认已核对收件会话与内容？这里只记录人工核对，演练草稿尚未发送。")) act("review", { draft_id: String(draft.id), text: draft.text, confirm: "1" }, () => setDraftOpen(false)); }}>确认演练草稿</button></div></Sheet>

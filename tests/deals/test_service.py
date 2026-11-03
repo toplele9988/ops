@@ -115,14 +115,14 @@ class DealServiceTests(unittest.TestCase):
         d = self.detail(did)
         self.assertEqual(d['status'], 'won')
         self.assertIsNotNone(d['won_at'])
-        self.assertEqual(d['tasks']['paid'], [])
+        self.assertEqual(len(d['tasks']['paid']), 3)
         won_at = d['won_at']
         self.now += 10
         self.write('update', did, stage='inspection')
         self.assertEqual(self.detail(did)['won_at'], won_at)
-        self.assertEqual(self.detail(did)['tasks']['inspection'], [])
+        self.assertEqual(len(self.detail(did)['tasks']['inspection']), 2)
         self.write('task', did, title='虚构备货待办')
-        self.assertEqual(len(self.detail(did)['tasks']['inspection']), 1)
+        self.assertEqual(len(self.detail(did)['tasks']['inspection']), 3)
         self.write('update', did, stage='quoting')
         self.assertEqual((self.detail(did)['status'], self.detail(did)['won_at']), ('open', None))
         with self.assertRaises(v.BadRequest):

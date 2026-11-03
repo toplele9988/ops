@@ -29,6 +29,7 @@ import { QuotePage } from "./pages/QuotePage";
 import { Requirements } from "./pages/Requirements";
 import { Search } from "./pages/Search";
 import { Suppliers } from "./pages/Suppliers";
+import { Outbox } from "./pages/Outbox";
 import { Soon } from "./pages/Soon";
 import { SystemHome } from "./pages/SystemHome";
 import { Workbench } from "./pages/Workbench";
@@ -60,6 +61,8 @@ export default function App() {
               <Route path="quotes/:id" element={<QuotePage />} />
               <Route path="inbox" element={<Inbox />} />
               <Route path="customers" element={<Customers />} />
+              <Route path="customers/:id" element={<Customers />} />
+              <Route path="outbox" element={<Outbox />} />
               <Route path="system/channels" element={<Channels />} />
               <Route path="system/alibaba-open" element={<AlibabaOpen />} />
               <Route path="system/pipeline" element={<Pipeline />} />
@@ -69,6 +72,7 @@ export default function App() {
               <Route path="requirements" element={<Requirements />} />
               <Route path="search" element={<Search />} />
               <Route path="suppliers" element={<Suppliers />} />
+              <Route path="suppliers/:id" element={<Suppliers />} />
               <Route path="products" element={<Products />} />
               <Route path="freight" element={<Freight />} />
               <Route path="system/knowledge" element={<KnowledgeHub />} />

@@ -1,3 +1,5 @@
+import { CounterpartTime } from "../ui/CounterpartTime";
+import { PageIntro } from "./overview/PageIntro";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, MessageSquare, Plus } from "lucide-react";
 import { useState } from "react";
@@ -79,6 +81,7 @@ export function DealPage() {
         <div>
           <h1 className="t-large">{d.title}</h1>
           <p>在这里跟进各方沟通、报价和收款，成交后继续安排备货发货。</p>
+          <CounterpartTime country={d.customer?.country} timezone={d.customer?.timezone} />
           <p>{d.customer ? `客户：${d.customer.name}` : "还没有客户"}{d.value ? ` · 金额 ${d.currency} ${d.value}` : ""}</p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -89,6 +92,7 @@ export function DealPage() {
           {(d.status === "lost" || d.status === "paused") && idx < paidIndex && <button type="button" className="btn" onClick={() => run(`deals/${d.id}/update`, { status: "open" }, "已重新打开")}>重新打开</button>}
         </div>
       </div>
+      <PageIntro text="核对这笔生意的往来、报价和待办，再推进下一步。" />
       <div className="stagebar" aria-label="阶段进度">
         {d.stages.map((s) => <span key={s.key} className={s.current ? "current" : s.done ? "done" : ""} aria-current={s.current ? "step" : undefined}>{s.label}</span>)}
       </div>
@@ -112,7 +116,7 @@ export function DealPage() {
                     <div className="row-sub" style={{ color: p.state === "us" ? "var(--red)" : p.state === "them" ? "var(--orange)" : undefined }}>{STATE_TEXT[p.state].text}{p.last_at ? ` · ${ago(p.last_at)}` : ""}</div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}><ConversationLink dealId={d.id} partyId={p.party_id} />
                       {(p.conversations ?? []).map((c) => (
-                        <Link key={c.key} className="btn sm" to={`/inbox?c=${encodeURIComponent(c.key)}`}><MessageSquare size={14} aria-hidden="true" />{c.channel_label} · {(c.title ?? "打开会话").slice(0, 14)}</Link>
+                        <Link key={c.key} className="btn sm" to={`/inbox?conversation=${encodeURIComponent(c.key)}`}><MessageSquare size={14} aria-hidden="true" />{c.channel_label} · {(c.title ?? "打开会话").slice(0, 14)}</Link>
                       ))}
                     </div>
                   </div>

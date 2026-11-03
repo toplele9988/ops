@@ -272,7 +272,7 @@ class Store:
                         side.chmod(0o600)
             finally:
                 os.umask(previous)
-        with closing(sqlite3.connect(self.path.resolve().as_uri() + '?mode=rw', uri=True)) as db:
+        with _LOCK, closing(sqlite3.connect(self.path.resolve().as_uri() + '?mode=rw', uri=True)) as db:
             configure(db)
             db.execute('PRAGMA journal_mode=WAL')
             migrate(db, target_version=self.target_version)

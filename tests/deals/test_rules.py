@@ -19,7 +19,7 @@ class RulesTests(unittest.TestCase):
                 self.assertEqual(pending_templates(stage, 'open', set()), ts)
                 self.assertEqual(pending_templates(stage, 'open', {t['template_key'] for t in ts}), [])
                 for status in ('won', 'lost'):
-                    self.assertEqual(pending_templates(stage, status, set()), [])
+                    self.assertEqual(pending_templates(stage, status, set()), ts if status == 'won' and KEYS.index(stage) >= KEYS.index('paid') else [])
                 self.assertEqual(sum(s['current'] for s in progress(stage)), 1)
 
     def test_payment_table_and_rollback(self):

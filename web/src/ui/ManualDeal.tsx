@@ -1,3 +1,4 @@
+import { beijingDate } from "../format";
 import { useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
@@ -9,7 +10,7 @@ import { useToast } from "./Toast";
 import { ReadFailure, WriteRecovery, useWriteRecovery } from "./ReadState";
 
 const SOURCES = ["阿里国际站", "微信", "WhatsApp", "邮箱", "独立站", "其他"];
-const today = () => new Date().toISOString().slice(0, 10);
+const today = beijingDate;
 
 /** 不从会话出发，直接把一笔生意（比如阿里国际站已经下单的）录进来；已收款可以一并确认。 */
 export function ManualDealButton() {

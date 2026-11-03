@@ -277,8 +277,9 @@ def test_mount_patches_on_temporary_copies(tmp_path):
     import ast
     for kind, target in [('production', production), ('rehearsal', rehearsal)]:
         before = target.read_bytes()
-        patch = mount / (kind + '-mount.patch')
-        for options in [('--dry-run',), (), ('-R',)]:
+        patch = root / 'patches/ops-r11/rehearsal.patch' if kind == 'rehearsal' else mount / (kind + '-mount.patch')
+        steps = [('-R', '--dry-run'), ('-R',), ('--dry-run',), ()] if kind == 'rehearsal' else [('--dry-run',), (), ('-R',)]
+        for options in steps:
             result = subprocess.run(['patch', '--batch', '--fuzz=0', '-p1', *options, '-i', str(patch)],
                 cwd=tmp_path, capture_output=True, text=True)
             assert result.returncode == 0, result.stdout + result.stderr

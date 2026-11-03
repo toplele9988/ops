@@ -1,3 +1,4 @@
+import { PageIntro } from "./overview/PageIntro";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
@@ -51,6 +52,7 @@ export function Deals() {
         </div>
         <NewDeal />
       </div>
+      <PageIntro page="deals" />
       <div className="kpis">
         <button type="button" className={`kpi${status === "open" && !waiting ? " on" : ""}`} onClick={() => set({ status: "open", waiting: "" })}><span className="t-foot">进行中</span><span className="kpi-n num">{s?.open ?? "—"}</span><span className="t-cap">正在谈的生意</span></button>
         <button type="button" className={`kpi${waiting === "us" ? " on" : ""}`} onClick={() => set({ status: "open", waiting: "us" })}><span className="t-foot">要我处理</span><span className="kpi-n num" style={{ color: s?.waiting_on_us ? "var(--red)" : undefined }}>{s?.waiting_on_us ?? "—"}</span><span className="t-cap">对方在等你回复，或有待办到期</span></button>

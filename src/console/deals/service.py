@@ -1,6 +1,7 @@
 """Transactional deal operations, identities and read projections in the archive DB."""
 from collections import defaultdict
 from datetime import datetime, timezone
+from console.customers.identity import canonical, projected_parties
 import sqlite3
 import time
 
@@ -127,9 +128,9 @@ class Deals:
             return dict(ok=True, id=identity)
         if op == 'create':
             key = values.get('conversation_key')
-            customer_id = values.get('customer_party_id')
+            customer_id = canonical(db, values.get('customer_party_id'))
             owner = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone() if key else None
-            owner_party = get(db, 'parties', owner['party_id']) if owner else None
+            owner_party = get(db, 'parties', canonical(db, owner['party_id'])) if owner else None
             if owner_party and owner_party['kind'] == 'customer':
                 if customer_id is not None and customer_id != owner_party['id']:
                     raise v.Conflict('会话已属于另一位客户，请先核对客户归属再建案')
@@ -149,6 +150,7 @@ class Deals:
                 party_id = customer_id
             if customer_id is None and party_id is not None and get(db, 'parties', party_id)['kind'] == 'customer':
                 customer_id = party_id
+            customer_id = canonical(db, customer_id)
             customer = get(db, 'parties', customer_id) if customer_id is not None else None
             title = values.get('title') or ((customer['name'][:497] + '的案子') if customer else '未命名案子')
             changes, events = transition(dict(stage='inquiry', status='open'), {'stage': values['stage']}, stamp, creating=True)
@@ -241,11 +243,13 @@ class Deals:
         with self.store.read() as db:
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             # GET on v1 is empty for the new domain; it never migrates a live file.
-            parties = {r['id']: dict(r) for r in db.execute('SELECT * FROM parties')}
+            parties = projected_parties(db)
             if resource in ('by_conversation', 'identity_lookup'):
                 key = params['key']
                 owner = db.execute('SELECT party_id FROM identities WHERE conversation_key=?', (key,)).fetchone() if 'identities' in tables else None
-                party = {k: parties[owner[0]][k] for k in ('id', 'name', 'kind')} if owner else None
+                party = {k: parties[owner[0]][k] for k in ('id', 'name', 'kind', 'country')} if owner else None
+                if party:
+                    party['timezone'] = parties[owner[0]].get('timezone')
                 if resource == 'identity_lookup':
                     return {'party': party} if party else None
                 deals = db.execute('SELECT d.id,d.title,d.stage,d.status FROM deals d JOIN deal_conversations c ON c.deal_id=d.id WHERE c.conversation_key=? ORDER BY d.id', (key,)) if 'deals' in tables else ()
@@ -281,7 +285,7 @@ class Deals:
         filtered = [d for d in items if
             (params.get('status', 'open') == 'all' or d['status'] == params.get('status', 'open'))
             and (not params.get('stage') or d['stage'] == params['stage'])
-            and (not params.get('party') or any(p['party_id'] == params['party'] for p in d['participants']))
+            and (not params.get('party') or (d['customer'] and d['customer']['id'] == params['party'] or any(p['party_id'] == params['party'] for p in d['participants'])))
             and (not params.get('q') or any(params['q'].casefold() in text.casefold() for text in (d['title'], d['customer']['name'] if d['customer'] else '')))
             and (not params.get('waiting') or (d['needs_attention'] if params['waiting'] == 'us' else bool(d['waiting_on'])))]
         filtered.sort(key=lambda d: (-(d['last_activity_at'] or 0), -d['id']))
@@ -290,10 +294,10 @@ class Deals:
     def _view(self, deal, parties, groups, lookup, now, detail):
         did = deal['id']
         tasks, events = groups['deal_tasks'][did], groups['deal_events'][did]
-        participants = [dict(p, name=parties[p['party_id']]['name']) for p in groups['deal_participants'][did]]
+        participants = [dict(p, name=parties[p['party_id']]['name'], canonical_party_id=parties[p['party_id']]['id']) for p in groups['deal_participants'][did]]
         state = evaluate(participants, groups['deal_conversations'][did], tasks, lookup, now, self.overdue_hours)
         customer = parties.get(deal['customer_party_id'])
-        result = dict(deal, customer={k: customer[k] for k in ('id', 'name')} if customer else None,
+        result = dict(deal, customer={k: customer.get(k) for k in ('id', 'name', 'country', 'timezone')} if customer else None,
                       stage_label=LABELS[deal['stage']], **state)
         value = result.pop('value_fen')
         result['value'] = v.fen_to_money(value) if value is not None else None

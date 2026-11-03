@@ -25,7 +25,7 @@ export function CrossTimeline({ deal }: { deal: DealDetail }) {
   const links = deal.conversations;
   const queries = useQueries({ queries: links.map((link) => ({ queryKey: ["deal-messages", link.key ?? link.conversation_key], queryFn: () => get<{ conversation: { channel_label?: string; buyer_name?: string }; messages: { id?: string; role: string; text?: string; sent_at: string }[] }>(`/api/v1/inbox/conversations/${encodeURIComponent(link.key ?? link.conversation_key ?? "")}`), retry: false })) });
   const entries = deal.events.map((e) => ({ key: `event-${e.id}`, at: e.at, text: e.summary, label: e.who ?? "案子记录", href: "" }));
-  queries.forEach((q, i) => q.data?.messages.forEach((m, j) => entries.push({ key: `${i}-${j}`, at: m.sent_at, text: m.text || "图片或文件，请打开会话查看", label: `${q.data?.conversation.channel_label ?? "会话"} · ${m.role === "seller" ? "我方" : q.data?.conversation.buyer_name ?? "对方"}`, href: `/inbox?c=${encodeURIComponent(links[i].key ?? links[i].conversation_key ?? "")}` })));
+  queries.forEach((q, i) => q.data?.messages.forEach((m, j) => entries.push({ key: `${i}-${j}`, at: m.sent_at, text: m.text || "图片或文件，请打开会话查看", label: `${q.data?.conversation.channel_label ?? "会话"} · ${m.role === "seller" ? "我方" : q.data?.conversation.buyer_name ?? "对方"}`, href: `/inbox?conversation=${encodeURIComponent(links[i].key ?? links[i].conversation_key ?? "")}` })));
   entries.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   return <>
     {queries.some((q) => q.isPending) && <p className="t-foot">正在汇总各渠道经过…</p>}

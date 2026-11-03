@@ -60,10 +60,10 @@ class ApiTests(unittest.TestCase):
 
     def test_routes_methods_and_auth_all_endpoints(self):
         seed(self.inbound)
-        self.assertEqual(len(self.routes), 8)
+        self.assertEqual(len(self.routes), 11)
         for route in self.routes:
             self.assertEqual(route.methods - {'HEAD'}, {'POST'} if route.name in (
-                'inbox_draft', 'inbox_draft_status') else {'GET'})
+                'inbox_draft', 'inbox_draft_status', 'inbox_ops_action', 'inbox_ops_supplier_draft') else {'GET'})
         for kind in self.handlers:
             for options in ({'authenticated': False}, {'principal': False}, {'username': ''}, {'recheck': False}):
                 with self.subTest(kind=kind, options=options):
@@ -108,7 +108,7 @@ class ApiTests(unittest.TestCase):
         req.state.password_recheck = lambda: events.append('recheck') or False
         with patch.object(cache, 'read', read):
             self.assertEqual(asyncio.run(self.handlers['inbox_summary'](req)), 403)
-        self.assertEqual(events, ['read', 'recheck'])
+        self.assertEqual(events, ['read', 'read', 'recheck'])
         for kind in ('inbox_conversations', 'customers_list'):
             self.assertEqual(self.call(kind, recheck=False, query={'page': '0'}), 403)
         self.inbound.unlink()
@@ -165,14 +165,14 @@ class ApiTests(unittest.TestCase):
         self.runner.assert_not_called()
         self.assertFalse(self.drafts.parent.exists())
 
-    def test_detail_chronology_recent_300_text_bounds_and_https_only(self):
+    def test_detail_full_chronology_and_https_only(self):
         seed(self.inbound, [message(age=400 - i, message_id=f'virtual-{i}', text='字' * 4200)
                             for i in range(310)])
         data = self.data('inbox_detail')
         self.assertEqual(data['conversation']['n_messages'], 310)
-        self.assertEqual(len(data['messages']), 300)
-        self.assertEqual(data['messages'][0]['sent_at'], NOW - 390)
-        self.assertEqual(len(data['messages'][0]['text']), 4000)
+        self.assertEqual(len(data['messages']), 310)
+        self.assertEqual(data['messages'][0]['sent_at'], NOW - 400)
+        self.assertEqual(len(data['messages'][0]['text']), 4200)
         self.assertEqual(data['conversation']['source_url'], 'https://example.invalid/chat')
         self.assertIsNone(data['draft'])
         self.assertEqual(len(self.data('inbox_conversations')['items'][0]['last']['text']), 140)
@@ -192,7 +192,7 @@ class ApiTests(unittest.TestCase):
         original = store.sqlite3.connect
         with patch.object(store.sqlite3, 'connect', wraps=original) as connect:
             for kind in self.handlers:
-                if kind not in ('inbox_draft', 'inbox_draft_status'):
+                if 'POST' not in next(r for r in self.routes if r.name == kind).methods:
                     self.data(kind)
             self.data('inbox_draft')
             self.data('inbox_draft_status', form={'status': ['used']})
@@ -229,7 +229,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(next(r for r in self.data('inbox_conversations')['items'] if r['key'] == self.key)['has_draft'])
         self.assertEqual(self.data('inbox_detail')['draft']['id'], draft['id'])
         fresh = inbox.build(self.app, self.inbound, self.drafts, runner=self.runner)
-        detail = asyncio.run(fresh[2].endpoint(request(key=self.key)))
+        detail = asyncio.run(next(r.endpoint for r in fresh if r.name == 'inbox_detail')(request(key=self.key)))
         self.assertEqual(json.loads(detail.body)['draft']['id'], draft['id'])
 
     def test_fenced_overlong_and_envelope_ai_outputs(self):
@@ -272,7 +272,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(json.loads(result.body)['retry_after'], 50)
             self.assertEqual(result.headers['retry-after'], '50')
             rebuilt = inbox.build(self.app, self.inbound, self.drafts, runner=self.runner)
-            self.assertEqual(asyncio.run(rebuilt[3].endpoint(request(key=self.key))).status_code, 429)
+            self.assertEqual(asyncio.run(next(r.endpoint for r in rebuilt if r.name == 'inbox_draft')(request(key=self.key))).status_code, 429)
         with patch('time.monotonic', return_value=10060):
             self.data('inbox_draft')
         self.assertEqual(self.runner.call_count, 2)
