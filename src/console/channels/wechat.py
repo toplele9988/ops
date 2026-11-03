@@ -7,6 +7,7 @@ from console.inbox.store import WECHAT_PATH, read_database
 from console.media import tokens
 
 from . import rich
+from . import wechat_private
 from .common import CachedAdapter, ROLES, conversation, file_stamp, placeholder, timestamp
 
 
@@ -42,12 +43,15 @@ class WechatAdapter(CachedAdapter):
     name, label = 'wechat', '微信'
 
     def __init__(self, path=WECHAT_PATH, include_roles=('customer', 'supplier', 'unclassified'), key_path=tokens.KEY_PATH,
-                 *, media_tokens=True):
+                 *, media_tokens=True, archive_path=None, contact_path=None):
         super().__init__()
         self.path, self.include_roles = Path(path), frozenset(include_roles)
         self.key_path = key_path
         # Metadata-only consumers must never create a media signing key on GET.
         self.media_tokens = media_tokens
+        live = self.path == WECHAT_PATH
+        self.archive_path = Path(archive_path) if archive_path is not None else (wechat_private.ARCHIVE_PATH if live else self.path.parent / 'disabled-archive.sqlite3')
+        self.contact_path = Path(contact_path) if contact_path is not None else (wechat_private.CONTACT_PATH if live else self.path.parent / 'disabled-contacts.sqlite3')
         if not self.include_roles <= ROLES:
             raise ValueError('群角色无效')
         self._all_raw = {}
@@ -100,7 +104,10 @@ class WechatAdapter(CachedAdapter):
                     roles[group].update(scopes[(app, str(mid))])
                 except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError):
                     continue
-        result = {}
+            private = wechat_private.conversations(db, archive_path=self.archive_path, contact_path=self.contact_path,
+                blocks=lambda p, a, m: rich.blocks_for(p, lambda ordinal:
+                    tokens.make(['wx', a, m, ordinal], self.key_path) if self.media_tokens else None))
+        result = dict(private)
         for group, messages in grouped.items():
             role = min(roles[group], key=lambda r: (-roles[group][r], r)) if roles[group] else 'unclassified'
             conv = conversation(self.name, self.label, '微信', group,
@@ -110,7 +117,8 @@ class WechatAdapter(CachedAdapter):
 
     def _read(self, now):
         try:
-            stamp = file_stamp(self.path)
+            source = file_stamp(self.path)
+            stamp = (source, file_stamp(self.archive_path), file_stamp(self.contact_path)) if source else None
             if stamp != self._stamp:
                 self._all_raw = self._load() if stamp is not None else {}
                 self._raw = {k: c for k, c in self._all_raw.items() if c['counterpart_role'] in self.include_roles}

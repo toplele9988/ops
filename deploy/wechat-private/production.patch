@@ -1,0 +1,202 @@
+--- a/api_groupbot.py
++++ b/api_groupbot.py
+@@ -285,6 +285,8 @@
+             self.db.execute("ALTER TABLE message_scopes ADD COLUMN business_role TEXT NOT NULL DEFAULT 'unclassified'")
+         self.db.commit()
+         initialize_owner_schema(self)
++        from wechat_private import initialize as initialize_private
++        initialize_private(self)
+         from group_onboarding import initialize
+         initialize(self)
+         from group_lifecycle import initialize as initialize_lifecycle
+@@ -726,6 +728,22 @@
+                     raise ValueError('outbound_precheck_mismatch')
+             except Exception:
+                 self.last_ingest_error = 'outbound_retention_failed'
++                return 503
++            try:
++                from wechat_private import capture as capture_private
++                capture_private(self.store, config, payload, self.now())
++            except Exception:
++                self.last_ingest_error = 'private_storage_failed'
++                return 503
++            return 200
++        from wechat_private import identify as identify_private, capture as capture_private
++        if identify_private(config, payload) is not None:
++            try:
++                from receive_only import capture as retain_private
++                retain_private(self.store, config, payload, self.now(), max_bytes=MAX_BODY)
++                capture_private(self.store, config, payload, self.now())
++            except Exception:
++                self.last_ingest_error = 'private_storage_failed'
+                 return 503
+             return 200
+         result = self._ingest_message(payload, config)
+--- a/company_materials.py
++++ b/company_materials.py
+@@ -155,6 +155,9 @@
+     if company is None or not isinstance(payload, dict):
+         return None
+     gid = row.get("group_id")
++    if isinstance(gid, str) and not gid.endswith('@chatroom'):
++        from wechat_private import media_auth
++        return media_auth(db, row, payload, config, now)
+     if is_closed_db(db, config, gid, row.get("own_wxid")):
+         return None
+     from collection_policy import enabled as collection_only, group_view, allows_unclassified_media
+--- a/console/channels/wechat.py
++++ b/console/channels/wechat.py
+@@ -7,6 +7,7 @@
+ from console.media import tokens
+ 
+ from . import rich
++from . import wechat_private
+ from .common import CachedAdapter, ROLES, conversation, file_stamp, placeholder, timestamp
+ 
+ 
+@@ -42,12 +43,15 @@
+     name, label = 'wechat', '微信'
+ 
+     def __init__(self, path=WECHAT_PATH, include_roles=('customer', 'supplier', 'unclassified'), key_path=tokens.KEY_PATH,
+-                 *, media_tokens=True):
++                 *, media_tokens=True, archive_path=None, contact_path=None):
+         super().__init__()
+         self.path, self.include_roles = Path(path), frozenset(include_roles)
+         self.key_path = key_path
+         # Metadata-only consumers must never create a media signing key on GET.
+         self.media_tokens = media_tokens
++        live = self.path == WECHAT_PATH
++        self.archive_path = Path(archive_path) if archive_path is not None else (wechat_private.ARCHIVE_PATH if live else self.path.parent / 'disabled-archive.sqlite3')
++        self.contact_path = Path(contact_path) if contact_path is not None else (wechat_private.CONTACT_PATH if live else self.path.parent / 'disabled-contacts.sqlite3')
+         if not self.include_roles <= ROLES:
+             raise ValueError('群角色无效')
+         self._all_raw = {}
+@@ -100,7 +104,10 @@
+                     roles[group].update(scopes[(app, str(mid))])
+                 except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError):
+                     continue
+-        result = {}
++            private = wechat_private.conversations(db, archive_path=self.archive_path, contact_path=self.contact_path,
++                blocks=lambda p, a, m: rich.blocks_for(p, lambda ordinal:
++                    tokens.make(['wx', a, m, ordinal], self.key_path) if self.media_tokens else None))
++        result = dict(private)
+         for group, messages in grouped.items():
+             role = min(roles[group], key=lambda r: (-roles[group][r], r)) if roles[group] else 'unclassified'
+             conv = conversation(self.name, self.label, '微信', group,
+@@ -110,7 +117,8 @@
+ 
+     def _read(self, now):
+         try:
+-            stamp = file_stamp(self.path)
++            source = file_stamp(self.path)
++            stamp = (source, file_stamp(self.archive_path), file_stamp(self.contact_path)) if source else None
+             if stamp != self._stamp:
+                 self._all_raw = self._load() if stamp is not None else {}
+                 self._raw = {k: c for k, c in self._all_raw.items() if c['counterpart_role'] in self.include_roles}
+--- a/console/kb/search.py
++++ b/console/kb/search.py
+@@ -2,8 +2,11 @@
+ from collections import Counter, defaultdict, deque
+ import hashlib
+ import math
++from pathlib import Path
+ 
+-from .index import MODEL_VERSION, numpy_module
++from console.inbox.store import WECHAT_PATH
++from console.channels.wechat_private import knowledge_hits
++from .index import CATALOG_PATH, MODEL_VERSION, numpy_module
+ from .policy import FAMILIES, PURPOSES, allowed
+ from .text import snippet, tokens
+ 
+@@ -54,15 +57,19 @@
+ 
+ 
+ class Search:
+-    def __init__(self, index, embedder=default_embedder):
++    def __init__(self, index, embedder=default_embedder, *, private_path=None):
++        catalog = Path(getattr(index, 'path', '/nonexistent/private-disabled-catalog'))
++        self.private_path = (Path(private_path) if private_path is not None else WECHAT_PATH
++                             if catalog == CATALOG_PATH else catalog.parent / 'disabled-private.sqlite3')
+         self.index, self.embedder = index, embedder
+         self.last_mode = 'lexical'
+ 
+     def search(self, query, purpose='owner', top_k=8, families=None, conversation_scope=None):
+         validate(query, purpose, top_k, families)
++        private = knowledge_hits(self.private_path, query, purpose, top_k, families)
+         snapshot = self.index.snapshot()
+         if snapshot is None:
+-            return dict(ready=False, mode='lexical', items=[])
++            return dict(ready=bool(private), mode='lexical', items=private)
+         eligible = {i for i, c in enumerate(snapshot.chunks) if (families is None or c.family in families)
+             and allowed(c.family, purpose, confidential=c.confidential, is_cost_price=c.is_cost_price,
+                         source_scope=c.scope, conversation_scope=conversation_scope)}
+@@ -124,4 +131,8 @@
+                     break
+                 if len(selected) == top_k:
+                     break
+-        return dict(ready=True, mode=mode, items=selected)
++        # Reserve one private-chat result when relevant; catalog ranking stays intact.
++        items = selected[:max(0, top_k - 1)] + private[:1] if private else selected
++        if len(items) < top_k:
++            items += private[1:1 + top_k - len(items)]
++        return dict(ready=True, mode=mode, items=[dict(item, rank=i) for i, item in enumerate(items, 1)])
+--- a/console/ops_queue/inbox.py
++++ b/console/ops_queue/inbox.py
+@@ -5,6 +5,7 @@
+ """
+ from collections import Counter, defaultdict
+ import json
++from pathlib import Path
+ 
+ from console.inbox.model import aggregate_messages, make_key, waiting_state
+ from console.overview.safety import database
+@@ -18,6 +19,8 @@
+ 
+ 
+ def wechat(path, now):
++    from console.channels.wechat_private import ARCHIVE_PATH, CONTACT_PATH, conversations
++    from console.inbox.store import WECHAT_PATH
+     with database(path, 1) as db:
+         columns = lambda table: {r[1] for r in db.execute('PRAGMA table_info(' + table + ')')}
+         msg, scope = columns('messages'), columns('message_scopes')
+@@ -48,7 +51,10 @@
+                 counts[group].update(roles[(account, str(mid))])
+             except (ValueError, TypeError, AttributeError):
+                 continue
+-    result = {}
++        live = Path(path) == WECHAT_PATH
++        private = conversations(db, archive_path=ARCHIVE_PATH if live else Path(path).parent / 'disabled-archive.sqlite3',
++                                contact_path=CONTACT_PATH if live else Path(path).parent / 'disabled-contacts.sqlite3')
++    result = {k: dict(c, **waiting_state(c['messages'], now)[0]) for k, c in private.items()}
+     for group, messages in groups.items():
+         messages.sort(key=lambda m: m['sent_at'])
+         role = min(counts[group], key=lambda r: (-counts[group][r], r)) if counts[group] else 'unclassified'
+--- a/console/ops_queue/service.py
++++ b/console/ops_queue/service.py
+@@ -100,9 +100,17 @@
+             return {r['conversation_key']: dict(r) for r in db.execute('SELECT * FROM inbox_workflow')}
+         states = archive_read('会话处理状态', workflow_states) or {}
+         owners.update(result or {})
++        private_ownership_keys = set()
+         for key, conv in conversations.items():
+             owner = owners.get(key, {})
+             role = owner.get('kind', conv.get('counterpart_role', 'customer'))
++            if (conv.get('business_role') == 'unknown' and not owner
++                    and conv.get('channel') == 'wechat' and not conv.get('is_group')):
++                private_ownership_keys.add(key)
++                add('ownership', key, conv.get('buyer_name') or '未命名联系人',
++                    '微信私聊对象尚未确认是客户、供应商、货代还是配套供应商。',
++                    '/triage?' + urlencode(dict(conversation=key)), '去确认归属', 4,
++                    [key, conv.get('last_seen'), 'private_unknown'])
+             last = next((m for m in reversed(conv.get('messages', ())) if m['role'] != 'unknown'), None)
+             if not last or conv.get('dormant') or conv.get('ignored'):
+                 continue
+@@ -165,6 +173,8 @@
+         def triage(db):
+             return [dict(r) for r in db.execute("SELECT id,conversation_key,updated_at FROM triage_suggestions WHERE status='pending'")]
+         for row in archive_read('待确认归属', triage) or []:
++            if row['conversation_key'] in private_ownership_keys:
++                continue
+             add('ownership', row['id'], '有一条会话等你确认归属', '核对往来单位和案子，再采用或修改建议。',
+                 '/triage?' + urlencode(dict(conversation=row['conversation_key'], suggestion=row['id'])),
+                 '去确认归属', 5, row)

@@ -1,0 +1,31 @@
+.operator-page { max-width: 1160px; margin: 0 auto; min-width: 0; }
+.operator-page h2 { font-size: 19px; margin: 0 0 16px; }
+.operator-page h3 { font-size: 16px; margin: 24px 0 12px; }
+.operator-page p { line-height: 1.65; overflow-wrap: anywhere; }
+.operator-section { margin: 20px 0; padding: 22px; border: 1px solid var(--border, #dce1e5); border-radius: 12px; background: var(--surface, #fff); }
+.operator-card { margin: 14px 0; padding: 18px; border: 1px solid var(--border, #dce1e5); border-radius: 10px; }
+.operator-card-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.operator-card-heading h2 { margin: 0; }
+.operator-badge { font-size: 12px; border-radius: 15px; background: #edf2fa; color: #254a78; padding: 5px 10px; }
+.operator-actions, .operator-levels { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+.operator-levels > div { flex: 1; min-width: 200px; padding: 12px; border-radius: 10px; background: #f5f7fa; }
+.operator-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px; cursor: pointer; }
+.operator-toggle input { width: 19px; height: 19px; accent-color: #245e98; flex-shrink: 0; }
+.operator-table-wrap { overflow-x: auto; }
+.operator-page table { width: 100%; border-collapse: collapse; }
+.operator-page caption { text-align: left; padding: 12px 0; font-weight: 600; }
+.operator-page th, .operator-page td { padding: 10px; text-align: left; border-bottom: 1px solid #e4e7eb; }
+.operator-page td .operator-toggle { font-size: 0; }
+.operator-page td input { font-size: initial; }
+.operator-contact { padding: 14px 0; border-bottom: 1px solid #e4e7eb; }
+.operator-page blockquote { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7fa; padding: 15px; margin: 14px 0; border-left: 3px solid #5279a2; line-height: 1.8; }
+.operator-page details { border-bottom: 1px solid #e4e7eb; padding: 14px 0; }
+.operator-page summary { cursor: pointer; min-height: 32px; overflow-wrap: anywhere; }
+.operator-page pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 500px; overflow-y: auto; font-size: 12px; }
+.operator-modal { position: fixed; inset: 0; background: #14233899; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.operator-modal > div, .operator-modal > form { width: min(620px, 100%); max-height: 90vh; overflow-y: auto; background: white; border-radius: 14px; padding: 24px; }
+.operator-modal label { display: grid; gap: 8px; margin: 16px 0; }
+.operator-modal input, .operator-modal select, .operator-modal textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #aeb9c6; border-radius: 6px; font: inherit; }
+.operator-page .btn { min-height: 44px; }
+.operator-page .danger { color: #a52b31; border-color: #dbaeb0; margin: 12px; }
+@media (max-width: 600px) { .operator-section { padding: 14px; } .operator-card { padding: 12px; } .operator-page th, .operator-page td { padding: 8px 5px; } .operator-page .page-head { flex-wrap: wrap; } .operator-levels > div { min-width: 100%; box-sizing: border-box; } }

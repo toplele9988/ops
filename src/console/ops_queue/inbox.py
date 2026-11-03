@@ -5,6 +5,7 @@ are not needed to decide whose turn it is. The original inbox keeps the detail.
 """
 from collections import Counter, defaultdict
 import json
+from pathlib import Path
 
 from console.inbox.model import aggregate_messages, make_key, waiting_state
 from console.overview.safety import database
@@ -18,6 +19,8 @@ def alibaba(path, now):
 
 
 def wechat(path, now):
+    from console.channels.wechat_private import ARCHIVE_PATH, CONTACT_PATH, conversations
+    from console.inbox.store import WECHAT_PATH
     with database(path, 1) as db:
         columns = lambda table: {r[1] for r in db.execute('PRAGMA table_info(' + table + ')')}
         msg, scope = columns('messages'), columns('message_scopes')
@@ -48,7 +51,10 @@ def wechat(path, now):
                 counts[group].update(roles[(account, str(mid))])
             except (ValueError, TypeError, AttributeError):
                 continue
-    result = {}
+        live = Path(path) == WECHAT_PATH
+        private = conversations(db, archive_path=ARCHIVE_PATH if live else Path(path).parent / 'disabled-archive.sqlite3',
+                                contact_path=CONTACT_PATH if live else Path(path).parent / 'disabled-contacts.sqlite3')
+    result = {k: dict(c, **waiting_state(c['messages'], now)[0]) for k, c in private.items()}
     for group, messages in groups.items():
         messages.sort(key=lambda m: m['sent_at'])
         role = min(counts[group], key=lambda r: (-counts[group][r], r)) if counts[group] else 'unclassified'
