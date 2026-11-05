@@ -112,13 +112,9 @@ class WechatDirectory:
             identities.update(r['id'] for r in self.read_discovery(self.discovery_path) if r['kind'] == 'group')
         except Exception:
             notes.append('本地发现库暂不可读，待补名群可能不完整')
-        try:
-            config = self.read_config(self.config_path)
-        except Exception:
-            config = {}
-            notes.append('群采集登记暂不可读，本次无法排除已有配置名称的群')
+        # Names saved in the collection config go stale when a group is renamed,
+        # so only a name already confirmed by the directory skips the lookup.
         named = {r['id'] for r in cached if cached_name(r)}
-        named.update(i for i, group in config.items() if text(group.get('group_name')))
         return sorted(identities - named), notes
 
     def _conversations(self, path, now):
@@ -193,8 +189,9 @@ class WechatDirectory:
             observed_name = (resolved.value if resolved.named else None) or observed_name
             metadata = cached_by_id.get(identity, {})
             refreshed_name = cached_name(metadata)
-            name = configured_name or refreshed_name or observed_name or {'group': '未命名群', 'private': '未命名联系人', 'official': '未命名公众号'}[entry['kind']]
-            name_at = timestamp(metadata.get('name_updated_at')) if refreshed_name and not configured_name else None
+            # WeChat's current name wins; a registered name may predate a rename.
+            name = refreshed_name or configured_name or observed_name or {'group': '未命名群', 'private': '未命名联系人', 'official': '未命名公众号'}[entry['kind']]
+            name_at = timestamp(metadata.get('name_updated_at')) if refreshed_name else None
             name_label = name_update_label(name_at)
             if name_label is None:
                 name_at = None
@@ -220,7 +217,7 @@ class WechatDirectory:
                       '已登记群采集；状态按已有消息判断，不代表在线或历史完整')
             visible, with_suppliers, visibility = self._visibility(entry['kind'], conv, count, available['inbox'])
             rows.append(dict(entry, sources=sorted(entry['sources']), name=name,
-                name_source='config' if configured_name else 'refresh_cache' if refreshed_name else 'conversation' if observed_name else 'unknown',
+                name_source='refresh_cache' if refreshed_name else 'config' if configured_name else 'conversation' if observed_name else 'unknown',
                 name_missing=not bool(configured_name or refreshed_name or observed_name),
                 name_missing_reason=None if configured_name or refreshed_name or observed_name else resolved.reason,
                 has_conversation=stats.get('n_messages', 0) > 0,

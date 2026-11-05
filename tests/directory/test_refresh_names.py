@@ -144,9 +144,10 @@ def test_all_21_previously_unnamed_groups_reclassify_without_enrolling(env):
     assert summary['name_updated_at'] == NOW and summary['name_update_label'].startswith('名称更新于 ')
 
 
-def test_config_then_cache_then_conversation_then_placeholder_precedence(env):
-    env.discover(group(1), group(2), group(3), group(4))
-    env.conversations = {group(1): {'buyer_name': 'CUS001 虚构会话旧名', 'counterpart_role': 'unclassified'},
+def test_cache_then_config_then_conversation_then_placeholder_precedence(env):
+    env.discover(group(1), group(2), group(3), group(4), group(5))
+    env.conversations = {group(5): {'buyer_name': 'CUS005 虚构会话保留名', 'counterpart_role': 'unclassified'},
+        group(1): {'buyer_name': 'CUS001 虚构会话旧名', 'counterpart_role': 'unclassified'},
         group(2): {'buyer_name': 'CUS002 虚构会话旧名', 'counterpart_role': 'unclassified'},
         group(3): {'buyer_name': 'CUS003 虚构会话保留名', 'counterpart_role': 'unclassified'}}
     client = FakeClient(contacts(), brief({group(1): 'SUP001 虚构缓存名', group(2): 'SUP002 虚构缓存名'}))
@@ -155,10 +156,15 @@ def test_config_then_cache_then_conversation_then_placeholder_precedence(env):
     env.groups[group(1)] = {'enabled': True, 'business_role': 'customer', 'group_name': 'CUS001 虚构配置名'}
     env.configure()
     rows = env.rows(service)
-    assert (rows[group(1)]['name'], rows[group(1)]['name_source']) == ('CUS001 虚构配置名', 'config')
+    # WeChat's current name beats a registered name that may predate a rename.
+    assert (rows[group(1)]['name'], rows[group(1)]['name_source']) == ('SUP001 虚构缓存名', 'refresh_cache')
+    env.groups[group(3)] = {'enabled': True, 'business_role': 'customer', 'group_name': 'CUS003 虚构配置名'}
+    env.configure()
+    rows = env.rows(service)
+    assert (rows[group(3)]['name'], rows[group(3)]['name_source']) == ('CUS003 虚构配置名', 'config')
     assert (rows[group(2)]['name'], rows[group(2)]['name_source']) == ('SUP002 虚构缓存名', 'refresh_cache')
     assert rows[group(2)]['named_role'] == 'supplier'
-    assert (rows[group(3)]['name'], rows[group(3)]['name_source']) == ('CUS003 虚构会话保留名', 'conversation')
+    assert (rows[group(5)]['name'], rows[group(5)]['name_source']) == ('CUS005 虚构会话保留名', 'conversation')
     assert (rows[group(4)]['name'], rows[group(4)]['name_source']) == ('未命名群', 'unknown')
 
 
@@ -263,18 +269,22 @@ def test_explicit_contact_failure_never_starts_brief(env):
     assert env.rows(service)[group(1)]['name'] == '未命名群'
 
 
-def test_named_cache_and_config_skip_remote_details_and_keep_name_timestamp(env):
+def test_named_cache_skips_lookup_but_stale_config_name_does_not(env):
     env.discover(group(1), group(2))
-    env.groups[group(2)] = {'enabled': True, 'business_role': 'customer', 'group_name': 'CUS002 虚构配置名'}
+    # The collection config keeps the name from before the group was renamed.
+    env.groups[group(2)] = {'enabled': True, 'business_role': 'customer', 'group_name': 'CUS002 虚构旧名'}
     env.configure()
-    client = FakeClient(contacts(group(1), group(2)), brief({group(1): 'SUP001 虚构缓存名'}))
+    def answer(batch):
+        return brief({group(1): 'SUP001 虚构缓存名'} if len(batch) > 1 else {batch[0]: 'CUS002 虚构新名'})
+    client = FakeClient(contacts(group(1), group(2)), answer)
     service = env.service(client)
-    assert service.refresh()['groups_named'] == 1
-    assert client.brief_calls == [[group(1)]]
+    assert service.refresh()['groups_named'] == 2
+    assert client.brief_calls == [[group(1), group(2)], [group(2)]]
+    assert env.rows(service)[group(2)]['name'] == 'CUS002 虚构新名'
     env.now += 600
     result = service.refresh()
     assert result['groups_named'] == 0 and result['complete'] is True
-    assert client.contact_calls == 2 and client.brief_calls == [[group(1)]]
+    assert client.contact_calls == 2 and len(client.brief_calls) == 2
     assert env.rows(service)[group(1)]['name_updated_at'] == NOW
 
 
