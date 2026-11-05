@@ -141,3 +141,14 @@ def test_default_group_reader_only_returns_groups_with_messages(env):
                            members_client_factory=lambda: env.client)
     refresh.poll()
     assert env.calls == [GROUP]
+
+
+def test_incomplete_directory_retries_hourly(env):
+    env.directory.error = RuntimeError('fiction partial')
+    env.refresh().poll()
+    env.now = NOW + 1800
+    env.refresh().poll()
+    assert env.directory.calls == 1
+    env.now = NOW + 3601
+    env.refresh().poll()
+    assert env.directory.calls == 2

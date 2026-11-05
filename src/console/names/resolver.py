@@ -55,11 +55,17 @@ class Snapshot:
         self.dossier_groups, self.dossier_contacts, self.private_contacts, self.phones = {}, {}, {}, {}
         self.directory_remarks, self.private_remarks, self.directory_ids = {}, {}, set()
         self.status = {}
+        self.group_members = {}
 
     def group(self, group_id, fallback=None):
         for source, names in (('directory', self.directory), ('state', self.groups), ('dossier', self.dossier_groups)):
             if names.get(group_id):
                 return Name(names[group_id], source)
+        # A group nobody named: WeChat itself shows member names, so do the same.
+        members = [n for n in dict.fromkeys(self.group_members.get(group_id, [])) if n]
+        if members:
+            label = '、'.join(members[:3]) + (f'等{len(members)}人' if len(members) > 3 else '')
+            return Name(display_text(label), 'members')
         reason = ('尚未刷新通讯录' if self.status.get('directory') == 'missing' else
                   '通讯录缓存暂不可读' if self.status.get('directory') != 'ok' else
                   '接口没返回群名' if group_id in self.directory_ids else '通讯录还没有这个群的名字')
@@ -182,10 +188,11 @@ class NamesResolver:
                     result.phones['wechat', None, None, row['id']] = row['phone']
 
         def members(db):
-            for group, identity, display, nick in db.execute('SELECT group_id,wxid,display_name,nick_name FROM nm_members'):
+            for group, identity, display, nick in db.execute('SELECT group_id,wxid,display_name,nick_name FROM nm_members ORDER BY rowid'):
                 name = first_name(display, nick)
                 if name:
                     result.members[group, identity] = name
+                    result.group_members.setdefault(group, []).append(name)
 
         def state(db):
             result.groups, result.legacy_members = _state_names(db)

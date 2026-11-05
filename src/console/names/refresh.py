@@ -14,6 +14,7 @@ from .store import MembersCache, member_rows
 DIRECTORY_INTERVAL = 6 * 3600
 MEMBERS_INTERVAL = 86400
 FAILURE_BACKOFF = 600
+RETRY_INTERVAL = 3600
 
 
 class NamesRefresh:
@@ -80,6 +81,9 @@ class NamesRefresh:
                     raise RefreshFailed('部分群名暂未取得')
             except Exception:
                 result['failures'] += 1
+                # The provider often answers group names only partly; try again in an hour, not six.
+                with self.store.write() as db:
+                    self._write_cursor(db, 'names:directory', now - DIRECTORY_INTERVAL + RETRY_INTERVAL)
                 self.store.health('names-directory', now, RefreshFailed('通讯录刷新未完成'))
             else:
                 self.store.health('names-directory', now)

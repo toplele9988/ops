@@ -146,3 +146,15 @@ def test_private_conversation_display_and_country_use_same_resolver(state):
     adapter = WechatAdapter(state, media_tokens=False, contact_path=resolver.contacts_path, names_resolver=resolver)
     private = next(row for row in adapter.list_conversations(NOW).values() if not row['is_group'])
     assert private['buyer_name'] == '虚构私聊新备注' and private['country'] == 'GB'
+
+
+def test_unnamed_group_shows_member_names_like_wechat(state):
+    resolver = NamesResolver(state)
+    members = MembersCache(resolver.members_path)
+    group = 'fiction-unnamed@chatroom'
+    assert resolver.group_name(group).startswith('微信群')
+    members.save(group, {f'fiction-m{i}': (None, f'虚构成员{i}') for i in range(5)}, NOW)
+    assert resolver.group_name(group) == '虚构成员0、虚构成员1、虚构成员2等5人'
+    two = 'fiction-pair@chatroom'
+    members.save(two, {'fiction-a': ('虚构甲', None), 'fiction-b': (None, '虚构乙')}, NOW)
+    assert resolver.group_name(two) == '虚构甲、虚构乙'
