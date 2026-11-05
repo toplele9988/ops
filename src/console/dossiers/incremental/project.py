@@ -89,7 +89,7 @@ def project(db, job, window, offers, now, changes):
             changes['suppliers'].append(supplier)
     # Parents may belong to a preceding split window that failed. Register them here too.
     for s in window.get('parents', []) + window['sources']:
-        row = {k: v for k, v in s.items() if k != 'text'}
+        row = {k: v for k, v in s.items() if k not in ('text', 'method')}
         row['extract_state'] = 'extracted' if s['text'] and s['direction'] == 'incoming' else row['extract_state']
         if append(db, 'sd_source', row, job, now, changes):
             changes['sources'].append(row)
@@ -138,18 +138,22 @@ def project(db, job, window, offers, now, changes):
         changes['offers'].append(dict(row))
         evidence_ids = {}
         for path, field in fields.items():
+            field_source = next(s for s in window['sources'] if s['source_id'] == field['source_id'])
+            is_ocr = field_source.get('method') == 'ocr'
+            method = 'ocr' if is_ocr else 'incremental:validated_literal'
+            state = 'ocr_candidate' if is_ocr else '逐字校验'
             eid = identity('IE', [oid, path, field])
             evidence_ids[path] = eid
             append(db, 'sd_evidence', dict(evidence_id=eid, entity_kind='offer', entity_id=oid, field_path=path,
                 source_id=field['source_id'], locator=next(s['locator'] for s in window['sources'] if s['source_id'] == field['source_id']),
-                excerpt=field['excerpt'], bbox_json=None, method='incremental:validated_literal', evidence_state='逐字校验'), job, now, changes)
+                excerpt=field['excerpt'], bbox_json=None, method=method, evidence_state=state), job, now, changes)
             if pid and (path == 'model' or path.startswith('config.')):
                 product_path = 'canonical_model' if path == 'model' else path
                 product_eid = identity('IEP', [pid, product_path, field])
                 append(db, 'sd_evidence', dict(evidence_id=product_eid, entity_kind='product', entity_id=pid,
                     field_path=product_path, source_id=field['source_id'],
                     locator=next(s['locator'] for s in window['sources'] if s['source_id'] == field['source_id']),
-                    excerpt=field['excerpt'], bbox_json=None, method='incremental:validated_literal', evidence_state='逐字校验'), job, now, changes)
+                    excerpt=field['excerpt'], bbox_json=None, method=method, evidence_state=state), job, now, changes)
         if row['amount_decimal'] is not None:
             prices = sorted(Decimal(r['amount_decimal']) for r in history if r['amount_decimal'] is not None and re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', r['amount_decimal']))
             if prices:

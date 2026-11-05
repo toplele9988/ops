@@ -20,21 +20,24 @@ function useFilters() {
   const set = (key:string, value:string) => setParams(prev=>{const p=new URLSearchParams(prev);value?p.set(key,value):p.delete(key);if(key!=="page")p.delete("page");return p;});
   return {params,set};
 }
+function OcrBadge({candidate}: {candidate:boolean}) {
+  return candidate?<Chip tone="orange" dot={false}>图片识别，待核对</Chip>:null;
+}
 function SourceEvidence({items,locator}: {items:Evidence[];locator?:string}) {
   const matching=locator?items.filter(e=>e.locator===locator):[];
   const selected=(matching.length?matching:items).slice(0,8),ids=new Set(selected.map(e=>e.evidence_id)),other=items.filter(e=>!ids.has(e.evidence_id));
-  const row=(e:Evidence)=><div className={`ds-evidence${locator===e.locator?" selected":""}`} key={e.evidence_id}><b>{e.field_path}</b><p>{e.locator} · {e.evidence_state}</p><blockquote>{e.excerpt}</blockquote></div>;
+  const row=(e:Evidence)=><div className={`ds-evidence${locator===e.locator?" selected":""}`} key={e.evidence_id}><b>{e.field_path}</b><p>{e.locator} · {e.evidence_state==="ocr_candidate"?<OcrBadge candidate/>:e.evidence_state}</p><blockquote>{e.excerpt}</blockquote></div>;
   return <>{selected.map(row)}{other.length>0&&<details><summary>展开该来源的其他 {other.length} 条字段证据</summary>{other.map(row)}</details>}</>;
 }
-function SourceTag({id, locator, label="来源"}: {id:string; locator?:string; label?:string}) {
+function SourceTag({id, locator, label="来源", ocrCandidate=false}: {id:string; locator?:string; label?:string; ocrCandidate?:boolean}) {
   const [open,setOpen]=useState(false);
   const q=useQuery({queryKey:["dossier-source",id],queryFn:()=>read<Source>(`/sources/${encodeURIComponent(id)}`),enabled:open,retry:false});
   const [imageFailed, setImageFailed]=useState(false);
-  return <><button className="ds-source" onClick={()=>setOpen(true)} aria-label={`查看${label} ${locator||id}`}><FileText size={12}/>{label}{locator && locator!=="text" ? ` · ${locator.split(":bbox")[0]}` : ""}</button>
+  return <><button className="ds-source" onClick={()=>setOpen(true)} aria-label={`查看${label} ${locator||id}`}><FileText size={12}/>{label}{locator && locator!=="text" ? ` · ${locator.split(":bbox")[0]}` : ""}</button><OcrBadge candidate={ocrCandidate}/>
     <Sheet open={open} title="核对来源" onClose={()=>setOpen(false)}>
       <button className="btn ds-source-close" onClick={()=>setOpen(false)}>关闭来源</button>
       {q.isLoading&&<Skeleton/>}{q.isError&&<Failure error={q.error} retry={()=>q.refetch()}/>}
-      {q.data&&<div className="ds-source-body"><Chip>{q.data.kind}</Chip><h3>{q.data.filename||"归档消息与证据"}</h3><p>来源时间：{known(q.data.source_at)}</p><p>位置：{locator||q.data.locator||"未知"}</p>
+      {q.data&&<div className="ds-source-body"><Chip>{q.data.kind}</Chip><OcrBadge candidate={q.data.evidence_state==="ocr_candidate"||q.data.evidence.some(e=>e.evidence_state==="ocr_candidate")}/><h3>{q.data.filename||"归档消息与证据"}</h3><p>来源时间：{known(q.data.source_at)}</p><p>位置：{locator||q.data.locator||"未知"}</p>
         {q.data.availability_note&&<div className="ds-note">{q.data.availability_note}</div>}
         {q.data.conversation_url&&<><p>会话：{q.data.conversation_id} · 时间：{q.data.message_at ? new Date(q.data.message_at*1000).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未知"}（北京时间）</p><a className="btn sm" href={q.data.conversation_url}>打开原会话</a></>}
         {q.data.original_text&&<blockquote>{q.data.original_text}</blockquote>}
@@ -46,7 +49,7 @@ function SourceTag({id, locator, label="来源"}: {id:string; locator?:string; l
     </Sheet></>;
 }
 function EvidenceTags({items}: {items:Evidence[]}) {
-  return <span className="ds-tags">{items.map(e=><SourceTag key={e.evidence_id} id={e.source_id} locator={e.locator} label={e.field_path}/>)}</span>;
+  return <span className="ds-tags">{items.map(e=><SourceTag key={e.evidence_id} id={e.source_id} locator={e.locator} label={e.field_path} ocrCandidate={e.evidence_state==="ocr_candidate"}/>)}</span>;
 }
 function Thumbnail({id}: {id:string|null}) {
   const [enabled,setEnabled]=useState(false),[failed,setFailed]=useState(false);
@@ -60,7 +63,7 @@ function Quote({offer}: {offer:Offer}) {
     {offer.amount_decimal===null&&<p>金额原文：{offer.amount_raw}</p>}
     <p className="ds-terms">币种 {known(offer.currency)} · 税制 {taxBases[offer.tax_basis]||known(offer.tax_basis)}{offer.tax_rate_text&&` / ${offer.tax_rate_text}`} · 单位 {known(offer.unit)}</p>
     <p className="ds-terms">报价日期 {known(offer.quoted_on)}{offer.document_period&&` · 文档期间 ${offer.document_period}`}<br/>有效期 {known(offer.valid_until)} · 状态 {quoteStates[offer.quote_state]||known(offer.quote_state)}</p>
-    <SourceTag id={offer.source_id} locator={offer.locator}/>
+    <SourceTag id={offer.source_id} locator={offer.locator} ocrCandidate={offer.evidence.some(e=>e.evidence_state==="ocr_candidate")}/>
     <details><summary>报价条件与字段证据</summary><p>金额原文：{offer.amount_raw}</p><p>MOQ {known(offer.moq_text)} · 数量条件 {known(offer.quantity_condition)} · 交期 {known(offer.lead_time_text)}</p><dl className="ds-config">{Object.entries(offer.conditions).map(([k,v])=><div key={k}><dt>{k}</dt><dd>{typeof v==="string"?v:JSON.stringify(v)}</dd></div>)}</dl><EvidenceTags items={offer.evidence}/></details>
   </article>;
 }

@@ -1,4 +1,4 @@
-"""Read-only rowid discovery and reuse of already parsed attachment text."""
+"""Read-only discovery, parsed-text reuse and post-snapshot local OCR enrichment."""
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 import hashlib
@@ -81,6 +81,8 @@ def source_row(db, *, kind, key, content_hash, text, at, now, direction, parent=
             continue
     media = media or {}
     coverage = dict(name=media.get('name'), format=media.get('format'), status=media.get('status'),
+                    archive_sha256=media.get('archive_sha256'), archive_status=media.get('archive_status'),
+                    media_table=media.get('media_table'),
                     truncated=bool(media.get('truncated')), text_chars=len(text),
                     no_text=not bool(text.strip()), denominator=1)
     return dict(source_id=sid or identity('IS', [kind, key, content_hash]), kind=kind,
@@ -169,10 +171,11 @@ def scan(db, path, *, after, now, expected=None):
                     continue
                 # Never select original/blob columns.
                 columns = {r[1] for r in wx.execute('PRAGMA table_info(' + table + ')')}
-                wanted = ['ordinal', 'parent_ordinal', 'name', 'status', 'text', 'format', 'truncated', 'sha256', 'archive_sha256']
+                wanted = ['ordinal', 'parent_ordinal', 'name', 'status', 'text', 'format', 'truncated', 'sha256', 'archive_sha256', 'archive_status']
                 cols = [c for c in wanted if c in columns]
                 for media_row in wx.execute('SELECT ' + ','.join(cols) + ' FROM ' + table + ' WHERE app_id=? AND message_id=? ORDER BY ordinal', (app, mid)):
                     media = dict(media_row)
+                    media['media_table'] = table
                     if table == 'company_media':
                         ordinals.add(media['ordinal'])
                     cached = media.get('text')
@@ -191,6 +194,23 @@ def scan(db, path, *, after, now, expected=None):
                     parent=parent['source_id'], media=media))
             records.append(dict(rowid=row['intake_rowid'], supplier_ids=sorted(sids), candidate=candidate, day=day, sources=sources))
     return dict(watermark=watermark, records=records, skipped=skips)
+
+
+def enrich_ocr(records, recognizer, now):
+    """Called after scan closes the source snapshot; preserve original hash binding."""
+    for record in records:
+        for source in record['sources']:
+            result = recognizer.recognize(source, now)
+            if not result or result['state'] != 'ready' or not result['text'].strip():
+                continue
+            h = digest(dumps([source['content_sha256'], result['engine_revision'], result['text']]))
+            source.update(source_id=identity('IS', [source['kind'], json.loads(source['external_key']), h]),
+                          content_sha256=h, text=result['text'], method='ocr', locator='attachment:ocr',
+                          parse_state='read', extract_state='observed')
+            media = json.loads(source['coverage_json'])
+            media.update(method='ocr', engine_revision=result['engine_revision'],
+                         mean_confidence=result['mean_confidence'], no_text=False, text_chars=len(result['text']))
+            source['coverage_json'] = dumps(media)
 
 
 def windows(records):

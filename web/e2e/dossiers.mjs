@@ -32,9 +32,12 @@ try{
     await page.locator('.ds-supplier-card').click();
     await page.getByRole('heading',{name:'虚构甲灯具',exact:true}).waitFor();
     await page.getByText('123.4500',{exact:true}).waitFor();assert.equal(await page.getByText('120.00000001',{exact:true}).count(),0);
-    await page.getByRole('button',{name:/查看来源 page:2:cell:B7/}).first().click();
-    await page.getByRole('dialog').getByText('虚构资料.png',{exact:true}).waitFor();
+    await page.locator('.ds-quote').filter({has:page.getByText('123.4500',{exact:true})}).getByText('图片识别，待核对',{exact:true}).first().waitFor();
+    await page.getByRole('button',{name:'查看来源 attachment:ocr',exact:true}).first().click();
+    await page.getByRole('dialog').getByText('虚构报价图.png',{exact:true}).waitFor();
     await page.getByRole('img',{name:'来源原图',exact:true}).waitFor();
+    await page.getByRole('dialog').getByText('图片识别，待核对',{exact:true}).first().waitFor();
+    await page.waitForFunction(()=>document.querySelector('.ds-original')?.naturalWidth>0);
     await shot('source');await page.getByRole('button',{name:'关闭来源',exact:true}).click();
     await page.getByRole('dialog').waitFor({state:'hidden'});await shot('supplier-detail');
     await visit('product-dossiers');await page.locator('.ds-product-card').waitFor();
@@ -45,6 +48,13 @@ try{
     assert.equal(await page.getByText('未确认供货',{exact:true}).count(),1);
     assert.ok(await page.getByText('未报价',{exact:true}).count()>0);
     assert.ok(await page.getByText(/币种 未知 · 税制 未知/).count()>0);
+    const plain=page.locator('.ds-quote').filter({has:page.getByText('120.00000001',{exact:true})});
+    assert.equal(await plain.getByText('图片识别，待核对',{exact:true}).count(),0);
+    await plain.getByRole('button',{name:'查看来源 page:2:cell:B7',exact:true}).click();
+    await page.getByRole('dialog').getByText('虚构资料.png',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('dialog').getByText('图片识别，待核对',{exact:true}).count(),0);
+    await page.getByRole('button',{name:'关闭来源',exact:true}).click();
+    await page.getByRole('dialog').waitFor({state:'hidden'});
     await shot('comparison');
     await visit('dossier-gaps');await page.getByTestId('dossier-gap').first().waitFor();
     await page.getByRole('combobox',{name:'该问哪家',exact:true}).selectOption('S1');

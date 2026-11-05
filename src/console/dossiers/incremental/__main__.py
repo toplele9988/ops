@@ -10,7 +10,7 @@ from .worker import Incremental, numeric_summary
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='供应商档案每日增量（只复用已有解析文本）')
+    parser = argparse.ArgumentParser(description='供应商档案每日增量（已有文本与本地图片 OCR）')
     sub = parser.add_subparsers(dest='command', required=True)
     run = sub.add_parser('run')
     run.add_argument('--once', action='store_true', required=True)
@@ -19,6 +19,8 @@ def main(argv=None):
     run.add_argument('--wechat', type=Path, default=WECHAT_PATH)
     run.add_argument('--report', type=Path)
     run.add_argument('--max-windows', type=int)
+    run.add_argument('--ocr', action=argparse.BooleanOptionalAction, default=True, help='本地识别归档图片（默认开启）')
+    run.add_argument('--max-ocr', type=int, default=200, help='每次最多尝试识别的不同图片数（默认 200，缓存命中不计）')
     run.add_argument('--daily-budget-tokens', type=int, default=300000)
     run.add_argument('--since-rowid', type=int, help='仅 dry-run：覆盖游标，回看指定 rowid 之后的消息')
     args = parser.parse_args(argv)
@@ -28,7 +30,8 @@ def main(argv=None):
         parser.error('--dry-run 必须指定 --report')
     try:
         result = Incremental(args.database, args.wechat).run(dry_run=args.dry_run, report=args.report,
-            max_windows=args.max_windows, daily_budget_tokens=args.daily_budget_tokens, since_rowid=args.since_rowid)
+            max_windows=args.max_windows, daily_budget_tokens=args.daily_budget_tokens, since_rowid=args.since_rowid,
+            ocr=args.ocr, max_ocr=args.max_ocr)
     except (OSError, ValueError, sqlite3.Error):
         print(json.dumps(dict(status='failed', failure_code='incremental_unavailable'), ensure_ascii=False))
         return 1

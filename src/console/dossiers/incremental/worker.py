@@ -10,9 +10,10 @@ import uuid
 from ..service import Dossiers
 from ..store import DB_PATH, readonly as dossier_readonly
 from .model import AiTask, FLASH, PRO, ModelFailure, prompt_for, prompt_hash
+from .ocr import ARCHIVE_ROOT, OCR
 from .project import project
 from .schema import REVISION, dumps, migrate
-from .sources import LOCAL_TZ, WECHAT_PATH, digest, identity, scan, windows
+from .sources import LOCAL_TZ, WECHAT_PATH, digest, enrich_ocr, identity, scan, windows
 
 
 def utcnow():
@@ -41,19 +42,23 @@ def changeset():
 def coverage(sources):
     unique = {s['source_id']: s for s in sources}
     return dict(sources=len(unique), no_text=sum(s['parse_state'] == 'no_text' for s in unique.values()),
+                ocr=sum(json.loads(s['coverage_json']).get('method') == 'ocr' for s in unique.values()),
                 attachments=sum(s['kind'] != 'message' for s in unique.values()),
                 truncated=sum(bool(json.loads(s['coverage_json']).get('truncated')) for s in unique.values()))
 
 
 class Incremental:
-    def __init__(self, database=DB_PATH, wechat=WECHAT_PATH, *, runner=None, now=utcnow):
+    def __init__(self, database=DB_PATH, wechat=WECHAT_PATH, *, runner=None, now=utcnow,
+                 archive_root=ARCHIVE_ROOT, ocr_engine_factory=None):
         self.database, self.wechat = Path(database), Path(wechat)
         self.model, self.now = AiTask(runner=runner), now
+        self.archive_root, self.ocr_engine_factory = archive_root, ocr_engine_factory
 
-    def run(self, *, dry_run=False, report=None, max_windows=None, daily_budget_tokens=300000, since_rowid=None):
+    def run(self, *, dry_run=False, report=None, max_windows=None, daily_budget_tokens=300000, since_rowid=None,
+            ocr=True, max_ocr=200):
         if since_rowid is not None and (not dry_run or since_rowid < 0):
             raise ValueError('since_rowid_requires_dry_run')
-        if daily_budget_tokens < 0 or (max_windows is not None and max_windows < 0):
+        if daily_budget_tokens < 0 or max_ocr < 0 or (max_windows is not None and max_windows < 0):
             raise ValueError('invalid_limit')
         if report is not None:
             # Fail before spending model quota if a report cannot be saved.
@@ -82,6 +87,8 @@ class Incremental:
         db.execute('PRAGMA foreign_keys=ON')
         adapter = 'wechat:messages:' + digest(str(self.wechat.resolve(strict=True)))[:16]
         try:
+            recognizer = OCR(db, root=self.archive_root, engine_factory=self.ocr_engine_factory,
+                             max_ocr=max_ocr, persist=not dry_run)
             with transaction(db):
                 migrate(db)
                 cursor = db.execute('SELECT watermark_json FROM sd_cursor WHERE adapter_id=?', (adapter,)).fetchone()
@@ -90,6 +97,9 @@ class Incremental:
                 found = scan(db, self.wechat, after=after, now=iso(started), expected=previous if since_rowid is None else None)
                 result['initialized'] = previous is None and since_rowid is None
                 result['skipped_messages'] = found['skipped']
+                if ocr:
+                    enrich_ocr(found['records'], recognizer, iso(started))
+                result['ocr'] = recognizer.stats
                 result['discovered_coverage'] = coverage([s for r in found['records'] for s in r['sources']])
                 for window in windows(found['records']):
                     ref = identity('IW', [window['supplier_id'], window['day'], window['rowids']])
@@ -220,6 +230,8 @@ def write_report(directory, result):
                 ('已报告 token', result['reported_tokens']), ('记账 token（含未知用量预留）', result['tokens']),
                 ('未知用量调用', result['unmetered_calls']), ('拟新增报价' if result['dry_run'] else '新增报价', summary['new_offers']),
                 ('补齐缺口', summary['gap_fills']), ('人工异常', summary['reviews']),
+                ('OCR 识别张数', result['ocr']['attempted']), ('OCR 缓存命中', result['ocr']['cache_hits']),
+                ('OCR 耗时秒', result['ocr']['seconds']), ('OCR 文本来源', result['coverage']['ocr']),
                 ('无文本来源', result['coverage']['no_text']), ('预算停止', result['budget_exhausted'])]) +
             '\n\n完整新增行、替代关系、缺口补齐、异常和模型账单见同名 JSON。未知税口径使用旧表要求的 unknown，税率为 NULL。\n')
     for suffix, content in [('.json', json.dumps(result, ensure_ascii=False, indent=2)), ('.md', text)]:
@@ -232,4 +244,5 @@ def write_report(directory, result):
 
 def numeric_summary(result):
     return {**{k: result[k] for k in ('session_id', 'dry_run', 'processed_windows', 'failed_windows', 'calls', 'tokens', 'reported_tokens', 'unmetered_calls', 'budget_exhausted')},
-            'new_offers': len(result['changes']['offers']), 'gap_fills': len(result['changes']['gap_fills']), 'reviews': len(result['changes']['reviews'])}
+            'new_offers': len(result['changes']['offers']), 'gap_fills': len(result['changes']['gap_fills']), 'reviews': len(result['changes']['reviews']),
+            'ocr': result['ocr'], 'coverage': result['coverage'], 'discovered_coverage': result['discovered_coverage']}

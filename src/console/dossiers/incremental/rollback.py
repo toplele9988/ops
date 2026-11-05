@@ -17,6 +17,6 @@ def rollback(db):
     for table in ('sd_evidence', 'sd_offer', 'sd_supplier_product', 'sd_product', 'sd_source', 'sd_supplier'):
         clause = ' AND '.join(table + '.' + key + "=json_extract(p.row_key,'$[" + str(i) + "]')" for i, key in enumerate(KEYS[table]))
         removed[table] = db.execute('DELETE FROM ' + table + " WHERE EXISTS(SELECT 1 FROM sd_projection p WHERE p.table_name=? AND " + clause + ')', (table,)).rowcount
-    for table in ('sd_projection', 'sd_gap_fill', 'sd_review', 'sd_run', 'sd_job', 'sd_cursor'):
-        db.execute('DROP TABLE ' + table)
+    for table in ('sd_projection', 'sd_gap_fill', 'sd_review', 'sd_run', 'sd_job', 'sd_cursor', 'sd_ocr'):
+        db.execute('DROP TABLE IF EXISTS ' + table)
     return removed

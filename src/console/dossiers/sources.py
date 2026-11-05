@@ -28,7 +28,7 @@ class Sources:
     def is_image(source):
         coverage = json.loads(source['coverage_json'])
         return (source['kind'] == 'nas_file' and Path(source['external_key']).suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.gif')) or (
-            source['kind'] in ('message_attachment', 'note_asset') and coverage.get('format', '').lower() in ('jpg', 'jpeg', 'png', 'webp', 'gif'))
+            source['kind'] in ('message_attachment', 'note_asset') and (coverage.get('format') or '').lower() in ('jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'))
 
     def message(self, source):
         if source['scope'] != 'supplier':

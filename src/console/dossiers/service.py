@@ -211,7 +211,10 @@ class Dossiers:
             source = dict(row)
             evidence = [unpack(r) for r in db.execute('SELECT * FROM sd_evidence WHERE source_id=? ORDER BY evidence_id', (source_id,))]
         public = {key: source[key] for key in ('source_id', 'kind', 'locator', 'source_at', 'parse_state', 'extract_state', 'failure_reason')}
-        public.update(evidence=evidence, coverage=json.loads(source['coverage_json']))
+        coverage = json.loads(source['coverage_json'])
+        method = coverage.get('method')
+        public.update(evidence=evidence, coverage=coverage, method=method,
+                      evidence_state='ocr_candidate' if method == 'ocr' else None)
         if self.resolver:
             public.update(self.resolver.resolve(source))
         return public

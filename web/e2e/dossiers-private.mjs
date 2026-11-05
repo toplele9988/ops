@@ -35,8 +35,18 @@ try{
     // Select a supplier with configurations, without logging its identity.
     const sid=s.items.find(x=>x.configuration_count>0).supplier_id;
     await page.goto(base+'/app/supplier-dossiers/'+encodeURIComponent(sid));await page.locator('.ds-table tbody tr').first().waitFor();await shot('supplier-detail');
+    const supplierDetail=await (await context.request.get(base+'/api/v1/dossiers/suppliers/'+encodeURIComponent(sid))).json();
+    const quote=supplierDetail.products.flatMap(p=>p.offers)[0];
+    const candidate=quote?.evidence.some(e=>e.evidence_state==='ocr_candidate');
+    if(candidate)assert.ok(quote.evidence.filter(e=>e.evidence_state==='ocr_candidate').every(e=>e.method==='ocr'));
     await page.locator('.ds-quote .ds-source').first().click();
-    await page.getByRole('dialog').getByRole('heading',{name:'逐字段证据',exact:true}).waitFor();await shot('source');
+    await page.getByRole('dialog').getByRole('heading',{name:'逐字段证据',exact:true}).waitFor();
+    if(candidate){
+      await page.getByRole('dialog').getByText('图片识别，待核对',{exact:true}).first().waitFor();
+      const source=await (await context.request.get(base+'/api/v1/dossiers/sources/'+encodeURIComponent(quote.source_id))).json();
+      if(source.available&&source.mime?.startsWith('image/'))await page.waitForFunction(()=>document.querySelector('.ds-original')?.naturalWidth>0);
+    }
+    await shot('source');
     await page.getByRole('button',{name:'关闭来源',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
     await page.goto(base+'/app/product-dossiers');await page.locator('.ds-product-card').first().waitFor();
     const imageFamily=f.items.find(x=>x.thumbnail_source_id);

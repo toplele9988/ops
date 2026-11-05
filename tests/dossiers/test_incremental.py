@@ -446,3 +446,288 @@ def test_free_pool_envelope_with_dashscope_provider_is_accepted():
             output=dict(offers=[]))))
     with pytest.raises(ModelFailure, match='unexpected_provider_identity'):
         AiTask(runner=other_route).extract('fictional', FLASH)
+
+
+@pytest.fixture
+def ocr_image(inc):
+    """Draw a fictional image; inject OCR so tests never load real models."""
+    from io import BytesIO
+    from PIL import Image, ImageDraw
+    import hashlib
+    image = Image.new('RGB', (640, 120), 'white')
+    ImageDraw.Draw(image).text((10, 10), 'DEMO-X  config-alpha\nQUOTE 125.00\nMOQ 10', fill='black')
+    output = BytesIO()
+    image.save(output, format='PNG')
+    raw = output.getvalue()
+    sha = hashlib.sha256(raw).hexdigest()
+    root = inc.env.root / 'blobs'
+    (root / (sha + '.blob')).write_bytes(raw)
+    inc.worker.archive_root = root
+    calls = []
+    def box(x, y):
+        return [[x, y], [x + 100, y], [x + 100, y + 12], [x, y + 12]]
+    def engine(image):
+        assert image.mode == 'RGB' and image.size == (640, 120)
+        calls.append(1)
+        # Intentionally shuffled, including a low confidence invented price.
+        return [[box(0, 60), 'MOQ 10', 0.8], [box(150, 10), '配置 config-alpha', 0.9],
+                [box(0, 40), '报价 125.00', 0.95], [box(0, 10), 'DEMO-X', 0.99],
+                [box(0, 30), '报价 999.00', 0.49]], None
+    inc.worker.ocr_engine_factory = lambda: engine
+    with sqlite3.connect(inc.env.wx) as db:
+        db.execute('ALTER TABLE company_media ADD COLUMN format TEXT')
+    def attach(**kw):
+        mid = add(inc, text='', attachment='', **kw)
+        with sqlite3.connect(inc.env.wx) as db:
+            db.execute("UPDATE company_media SET format='png',status='waiting_cloud_budget',archive_status='ready',archive_sha256=?,name='fictional-quote.png' WHERE message_id=?", (sha, mid))
+            db.execute('INSERT INTO message_scopes VALUES(?,?,?)', ('fictional-app', mid, 'supplier'))
+        return mid
+    return SimpleNamespace(sha=sha, root=root, raw=raw, calls=calls, attach=attach, engine=engine)
+
+
+def test_ocr_cache_order_filter_windows_evidence_and_original(inc, ocr_image):
+    prime(inc)
+    ocr_image.attach()
+    ocr_image.attach(day=21)
+    result = inc.worker.run()
+    assert result['failed_windows'] == 0 and len(result['changes']['offers']) == 2
+    assert len(ocr_image.calls) == result['ocr']['attempted'] == 1
+    assert result['ocr']['cache_hits'] == 1
+    assert result['coverage']['ocr'] == result['discovered_coverage']['ocr'] == 2
+    assert result['coverage']['no_text'] == 2  # Only the empty parent messages.
+    cached, = rows(inc, 'sd_ocr')
+    assert cached['state'] == 'ready' and cached['error_code'] is None
+    assert cached['text'] == 'DEMO-X\n配置 config-alpha\n报价 125.00\nMOQ 10'
+    assert cached['mean_confidence'] == pytest.approx(0.91)
+    assert len(json.loads(cached['lines_json'])) == 4
+    assert all('999.00' not in prompt and cached['text'] in json.loads(prompt[len(INSTRUCTION):])[0]['text'] for _, prompt in inc.calls)
+    offer = result['changes']['offers'][0]
+    public = inc.env.service.supplier('S1')
+    quote = next(o for p in public['products'] for o in p['offers'] if o['offer_id'] == offer['offer_id'])
+    assert all(e['method'] == 'ocr' and e['evidence_state'] == 'ocr_candidate' for e in quote['evidence'])
+    assert {e['entity_kind'] for e in rows(inc, 'sd_evidence') if e['method'] == 'ocr'} == {'offer', 'product'}
+    source = inc.env.service.source(offer['source_id'])
+    assert source['method'] == 'ocr' and source['evidence_state'] == 'ocr_candidate'
+    assert source['available'] and source['mime'] == 'image/png'
+    token = source['media_url'].rsplit('/', 1)[1]
+    assert inc.env.sources.media(token, inc.env.service)[0] == ocr_image.raw
+    assert not rows(inc, 'sd_review')
+    ocr_image.attach(day=22)
+    # A new run reuses persisted results, even with no fresh OCR budget.
+    assert inc.worker.run(max_ocr=0)['ocr']['attempted'] == 0
+    assert len(ocr_image.calls) == 1 and len(rows(inc, 'sd_ocr')) == 1
+
+
+@pytest.mark.parametrize('problem,code', [('file_symlink', 'unsafe_archive'), ('directory_symlink', 'unsafe_archive'),
+    ('oversized', 'blob_too_large'), ('not_image', 'invalid_image'), ('pixels', 'image_too_large'),
+    ('bomb_warning', 'image_too_large'), ('bomb_error', 'image_too_large'),
+    ('hash_mismatch', 'blob_hash_mismatch'), ('fifo', 'unsafe_archive'), ('missing', 'blob_unavailable')])
+def test_ocr_rejects_unsafe_input_and_caches_fixed_failure(inc, ocr_image, monkeypatch, problem, code):
+    import hashlib
+    import os
+    from PIL import Image
+    from console.dossiers.incremental import ocr
+    prime(inc)
+    ocr_image.attach()
+    path = ocr_image.root / (ocr_image.sha + '.blob')
+    if problem == 'file_symlink':
+        path.unlink()
+        path.symlink_to(inc.env.nas / 'fictional.png')
+    elif problem == 'directory_symlink':
+        alias = inc.env.root / 'archive-alias'
+        alias.symlink_to(ocr_image.root, target_is_directory=True)
+        inc.worker.archive_root = alias
+    elif problem == 'oversized':
+        with path.open('wb') as stream:
+            stream.truncate(ocr.MAX_BYTES + 1)
+    elif problem == 'not_image':
+        raw = b'fictional secret business data is not an image'
+        sha = hashlib.sha256(raw).hexdigest()
+        (ocr_image.root / (sha + '.blob')).write_bytes(raw)
+        with sqlite3.connect(inc.env.wx) as db:
+            db.execute("UPDATE company_media SET archive_sha256=? WHERE status='waiting_cloud_budget'", (sha,))
+    elif problem == 'pixels':
+        monkeypatch.setattr(ocr, 'MAX_PIXELS', 100)
+    elif problem in ('bomb_warning', 'bomb_error'):
+        monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 50000 if problem == 'bomb_warning' else 100)
+    elif problem == 'hash_mismatch':
+        path.write_bytes(b'fictional changed blob')
+    elif problem == 'fifo':
+        path.unlink()
+        os.mkfifo(path)
+    elif problem == 'missing':
+        path.unlink()
+    first = inc.worker.run()
+    assert first['ocr']['failed'] == 1 and not ocr_image.calls
+    cached, = rows(inc, 'sd_ocr')
+    assert cached['state'] == 'failed' and cached['error_code'] == code
+    assert cached['text'] == '' and cached['lines_json'] == '[]'
+    assert 'secret' not in json.dumps(cached)
+    assert inc.worker.run()['ocr']['attempted'] == 0
+
+
+@pytest.mark.parametrize('existing_cache_table', [False, True])
+def test_ocr_dry_run_only_memory_including_when_cache_table_exists(inc, ocr_image, existing_cache_table):
+    if existing_cache_table:
+        prime(inc)
+    ocr_image.attach()
+    before = {p: p.read_bytes() for p in (inc.env.target, inc.env.wx)}
+    first = inc.worker.run(dry_run=True, since_rowid=1)
+    assert first['ocr']['ready'] == 1 and len(first['changes']['offers']) == 1
+    if existing_cache_table:
+        assert not rows(inc, 'sd_ocr')
+    else:
+        assert 'sd_ocr' not in {r['name'] for r in table_info(inc)}
+    assert all(p.read_bytes() == raw for p, raw in before.items())
+    assert inc.worker.run(dry_run=True, since_rowid=1)['ocr']['attempted'] == 1
+    assert len(ocr_image.calls) == 2  # Nothing persisted between simulations.
+
+
+def test_ocr_disabled_and_limited_then_reobserved(inc, ocr_image):
+    prime(inc)
+    ocr_image.attach()
+    disabled = inc.worker.run(ocr=False)
+    assert disabled['calls'] == disabled['ocr']['attempted'] == disabled['coverage']['ocr'] == 0
+    assert disabled['coverage']['no_text'] == 2 and not rows(inc, 'sd_ocr')
+    limited = inc.worker.run(max_ocr=0)
+    assert limited['ocr']['limited'] == 1 and not ocr_image.calls
+    enabled = inc.worker.run(max_ocr=1)
+    assert enabled['ocr']['attempted'] == 1 and len(enabled['changes']['offers']) == 1
+    assert {s['parse_state'] for s in rows(inc, 'sd_source') if s['kind'] == 'message_attachment'} == {'read', 'no_text'}
+    assert inc.worker.run()['calls'] == 0
+    with pytest.raises(ValueError, match='invalid_limit'):
+        inc.worker.run(max_ocr=-1)
+
+
+@pytest.mark.parametrize('mode', ['low_confidence', 'engine_failure', 'bad_output'])
+def test_ocr_empty_and_engine_failure_cached(inc, ocr_image, mode):
+    prime(inc)
+    ocr_image.attach()
+    calls = []
+    def fake(image):
+        calls.append(1)
+        if mode == 'engine_failure':
+            raise RuntimeError('fictional secret upstream text')
+        if mode == 'bad_output':
+            return [['invalid bbox', 'fictional', float('nan')]], None
+        return [[[[0, 0], [1, 0], [1, 1], [0, 1]], 'fictional', 0.499]], None
+    inc.worker.ocr_engine_factory = lambda: fake
+    result = inc.worker.run()
+    assert result['calls'] == 0 and not result['changes']['offers']
+    cached, = rows(inc, 'sd_ocr')
+    assert cached['state'] == ('no_text' if mode == 'low_confidence' else 'failed')
+    assert cached['error_code'] == {'low_confidence': None, 'engine_failure': 'ocr_failed', 'bad_output': 'invalid_ocr_output'}[mode]
+    assert inc.worker.run()['ocr']['attempted'] == 0 and len(calls) == 1
+    assert 'secret' not in json.dumps(cached)
+
+
+def test_ocr_eligibility_requires_ready_image_and_empty_company_media(inc, ocr_image):
+    prime(inc)
+    mid = ocr_image.attach()
+    for field, value in [('archive_status', 'pending'), ('format', 'pdf'), ('text', 'existing parsed text')]:
+        with sqlite3.connect(inc.env.wx) as db:
+            db.execute('UPDATE company_media SET ' + field + '=? WHERE message_id=?', (value, mid))
+            if field == 'text':
+                db.execute("UPDATE company_media SET status='ready' WHERE message_id=?", (mid,))
+        assert inc.worker.run()['ocr']['attempted'] == 0
+        with sqlite3.connect(inc.env.wx) as db:
+            db.execute("UPDATE company_media SET archive_status='ready',format='png',text='' WHERE message_id=?", (mid,))
+    with sqlite3.connect(inc.env.wx) as db:
+        # Supplier's own outgoing picture must not be interpreted as a quote.
+        payload = json.loads(db.execute('SELECT payload FROM messages WHERE message_id=?', (mid,)).fetchone()[0])
+        payload['own_wxid'] = 'fictional-self'
+        db.execute('ALTER TABLE messages ADD COLUMN sender_id TEXT')
+        db.execute('UPDATE messages SET sender_id=?,payload=? WHERE message_id=?', ('fictional-self', json.dumps(payload), mid))
+    assert inc.worker.run()['ocr']['attempted'] == 0
+    assert not ocr_image.calls
+
+
+def test_ocr_price_anomaly_queue_unchanged(inc, ocr_image):
+    prime(inc)
+    ocr_image.attach()
+    def expensive(image):
+        raw, time = ocr_image.engine(image)
+        return [[box, text.replace('125.00', '200.00'), score] for box, text, score in raw], time
+    inc.worker.ocr_engine_factory = lambda: expensive
+    result = inc.worker.run()
+    assert result['changes']['reviews'][0]['review_kind'] == 'price_anomaly'
+    assert {r['review_kind'] for r in rows(inc, 'sd_review')} == {'price_anomaly'}
+
+
+def test_ocr_cli_flags_default_enabled_and_disabled(monkeypatch, tmp_path, capsys):
+    from console.dossiers.incremental import __main__ as cli
+    seen = []
+    class FakeIncremental:
+        def __init__(self, *args):
+            pass
+        def run(self, **kw):
+            seen.append(kw)
+            return dict(failed_windows=0)
+    monkeypatch.setattr(cli, 'Incremental', FakeIncremental)
+    monkeypatch.setattr(cli, 'numeric_summary', lambda result: result)
+    assert cli.main(['run', '--once']) == 0
+    assert seen[-1]['ocr'] is True and seen[-1]['max_ocr'] == 200
+    assert cli.main(['run', '--once', '--no-ocr', '--max-ocr', '3']) == 0
+    assert seen[-1]['ocr'] is False and seen[-1]['max_ocr'] == 3
+    assert cli.main(['run', '--once', '--ocr']) == 0 and seen[-1]['ocr'] is True
+
+
+def test_ocr_limit_counts_distinct_misses_but_allows_cache_hits(inc, ocr_image):
+    from io import BytesIO
+    from PIL import Image
+    import hashlib
+    prime(inc)
+    ocr_image.attach()
+    second = ocr_image.attach(day=21)
+    ocr_image.attach(day=22)
+    image = Image.new('RGB', (640, 120), 'gray')
+    data = BytesIO()
+    image.save(data, format='PNG')
+    sha = hashlib.sha256(data.getvalue()).hexdigest()
+    (ocr_image.root / (sha + '.blob')).write_bytes(data.getvalue())
+    with sqlite3.connect(inc.env.wx) as db:
+        db.execute('UPDATE company_media SET archive_sha256=? WHERE message_id=?', (sha, second))
+    result = inc.worker.run(max_ocr=1)
+    assert result['ocr']['attempted'] == result['ocr']['limited'] == result['ocr']['cache_hits'] == 1
+    assert len(rows(inc, 'sd_ocr')) == len(ocr_image.calls) == 1
+    assert inc.worker.run(max_ocr=1)['ocr']['attempted'] == 1
+    assert len(rows(inc, 'sd_ocr')) == len(ocr_image.calls) == 2
+
+
+@pytest.mark.parametrize('image_format', ['JPEG', 'PNG', 'WEBP', 'BMP'])
+def test_ocr_supported_formats_remain_in_memory(inc, ocr_image, image_format):
+    from io import BytesIO
+    from PIL import Image
+    import hashlib
+    prime(inc)
+    mid = ocr_image.attach()
+    data = BytesIO()
+    Image.new('RGB', (640, 120), 'white').save(data, format=image_format)
+    sha = hashlib.sha256(data.getvalue()).hexdigest()
+    (ocr_image.root / (sha + '.blob')).write_bytes(data.getvalue())
+    with sqlite3.connect(inc.env.wx) as db:
+        db.execute('UPDATE company_media SET format=?,archive_sha256=? WHERE message_id=?', (image_format.lower(), sha, mid))
+    before = set(ocr_image.root.iterdir())
+    result = inc.worker.run()
+    assert result['ocr']['ready'] == 1 and len(result['changes']['offers']) == 1
+    assert set(ocr_image.root.iterdir()) == before
+    assert inc.env.service.source(result['changes']['offers'][0]['source_id'])['mime'] == 'image/' + image_format.lower()
+
+
+def test_ocr_evidence_is_tagged_per_field_in_mixed_quote(inc, ocr_image):
+    prime(inc)
+    ocr_image.attach()
+    add(inc, text='DEMO-X 配置 config-alpha')
+    def mixed(args, **kw):
+        sources = json.loads(kw['input'][len(INSTRUCTION):])
+        image = next(s for s in sources if '报价' in s['text'])
+        text = next(s for s in sources if s['text'] == 'DEMO-X 配置 config-alpha')
+        fields = dict(model=dict(value='DEMO-X', source_id=text['source_id'], excerpt=text['text']),
+                      amount_decimal=dict(value='125.00', source_id=image['source_id'], excerpt=image['text']))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(dict(status='ok', answer=json.dumps(dict(offers=[dict(fields=fields)])))), stderr='')
+    inc.worker.model.runner = mixed
+    result = inc.worker.run()
+    offer, = result['changes']['offers']
+    evidence = [e for e in rows(inc, 'sd_evidence') if e['entity_id'] == offer['offer_id']]
+    assert {(e['field_path'], e['method'], e['evidence_state']) for e in evidence} == {
+        ('model', 'incremental:validated_literal', '逐字校验'), ('amount_decimal', 'ocr', 'ocr_candidate')}

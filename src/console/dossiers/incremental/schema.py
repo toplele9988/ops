@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS sd_gap_fill(
 CREATE TABLE IF NOT EXISTS sd_projection(
  table_name TEXT NOT NULL,row_key TEXT NOT NULL,job_id TEXT NOT NULL REFERENCES sd_job(job_id),
  created_at TEXT NOT NULL,PRIMARY KEY(table_name,row_key));
+CREATE TABLE IF NOT EXISTS sd_ocr(
+ archive_sha256 TEXT PRIMARY KEY,engine_revision TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('ready','no_text','failed')),text TEXT NOT NULL,
+ lines_json TEXT NOT NULL,mean_confidence REAL,created_at TEXT NOT NULL,error_code TEXT);
 CREATE INDEX IF NOT EXISTS sd_job_ready_idx ON sd_job(state,not_before,lease_until);
 CREATE INDEX IF NOT EXISTS sd_run_day_idx ON sd_run(budget_day);
 CREATE INDEX IF NOT EXISTS sd_projection_time_idx ON sd_projection(created_at,table_name);
@@ -46,7 +50,8 @@ def migrate(db):
                 'sd_run': {'run_id', 'charged_tokens', 'tool_revision'},
                 'sd_review': {'review_kind', 'details_json'},
                 'sd_gap_fill': {'gap_id', 'evidence_ids_json'},
-                'sd_projection': {'table_name', 'row_key'}}
+                'sd_projection': {'table_name', 'row_key'},
+                'sd_ocr': {'archive_sha256', 'engine_revision', 'state', 'text', 'lines_json', 'mean_confidence', 'created_at', 'error_code'}}
     for table, columns in required.items():
         if not columns <= {r[1] for r in db.execute('PRAGMA table_info(' + table + ')')}:
             raise ValueError('incompatible_incremental_schema')
