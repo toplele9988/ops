@@ -49,6 +49,9 @@ export async function installQueueFixtures(page, problems = [], { queueOnly = fa
       eligible: true, done: state.nodeDone ? 1 : 0, total: 1, next_due: state.nodeDone ? null : "2029-12-31", overdue: !state.nodeDone, suggestions: [],
       items: [{ id: 91, node: "production", label: "生产中", status: state.nodeDone ? "done" : "doing", responsible: "supplier", party_id: null, planned_on: "2029-12-31", completed_on: state.nodeDone ? "2030-01-01" : null, due_on: "2029-12-31", overdue: !state.nodeDone, note: "虚构进度" }],
     });
+    // Opening a conversation asks for automatic Chinese translation; the list asks for cached ones.
+    if (path === "/api/v1/lang/translate" && method === "POST" && ["preview", "cached", "auto"].includes(body.mode))
+      return respond(body.mode === "preview" ? { previews: [] } : { target_language: "zh-CN", items: [] });
     if (method !== "GET") { problems.push(`未登记演练动作 ${method} ${path}`); return respond({ error: "未登记演练动作" }, 501); }
     return route.fallback();
   });

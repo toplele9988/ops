@@ -19,7 +19,7 @@ from .gaps import Gaps
 from .model import AiTask
 from .runtime import build_operator, QuotePolicyFromRound
 from .sources import Source, LocalInbox
-from .worker import Worker
+from .worker import Background, Worker
 
 OPERATOR_PATH = Path('/var/lib/imgw/ops-app/operator/operator.sqlite3')
 INCREMENTAL_LOGS = Path('/var/lib/imgw/ops-app/dossiers/incremental-runs')
@@ -32,6 +32,18 @@ def sources():
             Source('wechat-private', WECHAT_PATH, 'private'),
             Source('whatsapp-live', '/var/lib/imgw/whatsapp/messages.sqlite3', 'whatsapp', authorize=_bridge_identity),
             Source('whatsapp-history', '/var/lib/imgw/whatsapp-history-private/history.sqlite3', 'whatsapp', authorize=_bridge_identity)]
+
+
+def background_jobs(operator):
+    """Production-only slow jobs, each in its own thread, each self-throttled."""
+    from console.lang import Lang, PretranslateSchedule
+    from console.names import NamesRefresh
+    from console.profiles.schedule import ProfilesSchedule
+    return (('names', Background(NamesRefresh(operator.store, operator.clock).poll)),
+            ('pretranslate', Background(PretranslateSchedule(Lang(inbox=shared_inbox())).poll)),
+            # Hourly separate process, at most 20 conversations, free model pool only.
+            ('profiles', ProfilesSchedule(operator.store, operator.clock,
+                                          source_root=Path(__file__).resolve().parents[2])))
 
 
 def assemble(*, operator_path=OPERATOR_PATH, archive_path=ARCHIVE_PATH,
@@ -58,6 +70,7 @@ def assemble(*, operator_path=OPERATOR_PATH, archive_path=ARCHIVE_PATH,
                     triage=AutomaticTriage(roles, operator.store, operator.clock),
                     incremental=DailyIncremental(operator.store, operator.clock, log_dir=INCREMENTAL_LOGS,
                                                  source_root=Path(__file__).resolve().parents[2]) if incremental else None,
+                    extras=background_jobs(operator) if incremental else (),
                     seed_at_tail=True)
     return operator, worker
 

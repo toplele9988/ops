@@ -49,8 +49,13 @@ export async function installDealFixtures(page, problems=[]) {
         if(path==='archive/products') return reply(pageOf(products));
         if(path==='inbox/conversations') return reply(pageOf(conversations));
         if(path.startsWith('inbox/conversations/fictional-')) {const c=conversations.find((c)=>path.endsWith(c.key));return reply({conversation:c,messages:[{role:'buyer',text:c.channel_label==='微信'?'虚构供应商：成本已确认':'虚构客户：请报价四件',sent_at:at}]});}
-        if(path==='deals/summary') return reply({open:state.deals.filter((d)=>d.status==='open').length,won:state.deals.filter((d)=>d.status==='won').length,lost:state.deals.filter((d)=>d.status==='lost').length,paused:0,waiting_on_us:0,by_stage:[],overdue:0,due_tasks:0});
-        if(path==='deals') return reply(pageOf(state.deals.filter((d)=>!url.searchParams.get('status')||url.searchParams.get('status')==='all'||d.status===url.searchParams.get('status'))));
+        if(path==='deals/summary') return reply({open:state.deals.filter((d)=>d.status==='open').length,won:state.deals.filter((d)=>d.status==='won').length,lost:state.deals.filter((d)=>d.status==='lost').length,paused:0,waiting_on_us:0,by_stage:stages.map((stage,i)=>({stage,label:labels[i],count:state.deals.filter(d=>d.status==='open'&&d.stage===stage).length})),overdue:0,due_tasks:0});
+        if(path==='deals') {
+          const params=url.searchParams;
+          const filtered=state.deals.filter(d=>(!params.get('status')||params.get('status')==='all'||d.status===params.get('status'))&&(!params.get('stage')||d.stage===params.get('stage'))&&(!params.get('waiting')||(params.get('waiting')==='us'?d.needs_attention:d.waiting_on.length>0)));
+          const number=Number(params.get('page')||1),size=Number(params.get('page_size')||30);
+          return reply({items:filtered.slice((number-1)*size,number*size),total:filtered.length,page:number,page_size:size});
+        }
         if(d) {
           if(!match[2]) return reply(view(d));
           if(match[2]==='quotes') return reply(pageOf(state.quotes.filter((q)=>q.deal_id===d.id).map((q)=>({...calc(q),blocking:q.blocking.length,warnings:0}))));

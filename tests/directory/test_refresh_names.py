@@ -170,7 +170,7 @@ def test_nickname_and_remark_preserve_only_verified_fields(env):
     service = env.service(FakeClient(contacts(), response))
     assert service.refresh()['groups_named'] == 2
     rows = env.rows(service)
-    assert rows[group(1)]['name'] == 'SUP001 虚构正式群名'
+    assert rows[group(1)]['name'] == '虚构备注'
     assert rows[group(2)]['name'] == 'CUS002 虚构备注客户'
     cached = {row['id']: row for row in service.cache.read()}
     assert cached[group(1)]['nickname'] == 'SUP001 虚构正式群名'

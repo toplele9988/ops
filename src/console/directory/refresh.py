@@ -29,11 +29,8 @@ _NAME_COLUMNS = {'nickname': 'TEXT', 'remark': 'TEXT', 'name_updated_at': 'REAL'
 
 
 def cached_name(row):
-    for field in ('nickname', 'remark'):
-        value = text(row.get(field), 128)
-        if value and not placeholder_name(value):
-            return value
-    return None
+    from console.names.clean import first_name
+    return first_name(row.get('remark'), row.get('nickname'))
 
 
 def _brief_rows(payload, requested):

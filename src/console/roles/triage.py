@@ -82,7 +82,7 @@ def combine_buyers(prepared, previous, inputs):
     primary = {}
     for conv, rule in prepared:
         group = rule['buyer_fingerprint']
-        if rule['reason'].startswith('档案：') or '档案冲突：' in rule['reason']:
+        if rule.get('source') == 'ai_profile' or rule['reason'].startswith('档案：') or '档案冲突：' in rule['reason']:
             continue
         if not group or rule['action'] == 'ignore' or rule['suggested_party_kind'] != 'customer' or len(owners.get(group, ())) > 1:
             continue
@@ -152,7 +152,9 @@ def latest_message(conversation):
                key=lambda m: seconds(m['sent_at']), default=None)
 
 
-def eligible(conversation, now, dossier=False):
+def eligible(conversation, now, dossier=False, profile=False):
+    if profile:
+        return True
     if conversation.get('counterpart_role') in ('learning', 'internal', 'ignored'):
         return False
     if dossier:
@@ -182,6 +184,9 @@ def rules(conv, inputs):
                     confidence=.95 if party else .9, certain=True,
                     reason=f"档案：该群是供应商「{safe(link['name'], 100)}」的工作群（来源 {safe(link['source_id'], 200) or '未标注'}）")
     result = name_rules(conv, inputs)
+    profile = getattr(inputs, 'profiles', {}).get(conv['key'])
+    if profile and usable_profile(profile):
+        result = profile_rule(conv, inputs, profile, result)
     if conflict:
         result.update(certain=False, reason=result['reason'] + '；档案冲突：' + conflict)
     return result
@@ -280,3 +285,39 @@ def render(output):
         return output['reason'] + '。请先处理同名买家的主建议。'
     action = {'link': '关联已有案子', 'create': '新建案子', 'identity': '确认往来单位', 'ignore': '忽略此会话'}[output['action']]
     return f"建议{action}；对方可能是{PARTY_LABELS[output['suggested_party_kind']]}。{output['reason']}。请你确认后再处理。"
+
+
+def usable_profile(profile):
+    return (profile.get('state') in ('ready', 'partial') and
+            type(profile.get('confidence')) in (int, float) and .7 <= profile['confidence'] <= 1)
+
+
+def profile_rule(conv, inputs, profile, fallback):
+    kind = profile['kind']
+    if kind not in IDENTITY_KINDS | {'customer', 'peer', 'industry', 'personal', 'system', 'internal'}:
+        return fallback
+    result = dict(fallback, reason=f"AI 读了 {profile['messages_read']} 条消息：{safe(profile['summary'], 200)}",
+                  confidence=profile['confidence'], certain=True, source='ai_profile', suggested_deal_id=None)
+    if kind in IDENTITY_KINDS:
+        result.update(action='identity', suggested_party_kind=kind)
+    elif kind == 'customer':
+        result.update(action='create', suggested_party_kind='customer')
+        # Retain a link only when existing confirmed party/name/product rules already found it.
+        if fallback['action'] == 'link' and fallback['suggested_party_kind'] == 'customer':
+            result.update(action='link', suggested_deal_id=fallback['suggested_deal_id'])
+    else:
+        result.update(action='ignore', suggested_party_kind='customer', suggested_party_id=None)
+    if result['suggested_party_id']:
+        party = next((p for p in inputs.rows['parties'] if p['id'] == result['suggested_party_id']), None)
+        if not party or party['kind'] != result['suggested_party_kind']:
+            result['suggested_party_id'] = None
+    return result
+
+
+def profile_run(run):
+    """Expose provenance stored in v4 JSON, preserving its fixed ai/rules SQL enum."""
+    if run.get('output_json', {}).get('profile_source') != 'ai_profile':
+        return run
+    output = dict(run['output_json'])
+    output.pop('profile_source')
+    return dict(run, source='ai_profile', output_json=output)

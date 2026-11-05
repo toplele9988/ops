@@ -10,6 +10,8 @@ from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from console.media import tokens
+from console.names import NamesResolver
+from console.names.sources import STATE_PATH
 from console.wamedia import MediaStore, identity
 from console.wamedia.ingest import IngestWorker
 from . import rich, whatsapp_rich
@@ -57,9 +59,11 @@ class WhatsAppAdapter(CachedAdapter):
     name, label = 'whatsapp', 'WhatsApp'
 
     def __init__(self, config_path=CONFIG_PATH, fetch=None, clock=None, stat_fn=None, group_gid=None,
-                 *, media_store=None, key_path=tokens.KEY_PATH):
+                 *, media_store=None, key_path=tokens.KEY_PATH, names_resolver=None):
         super().__init__()
         self.path = Path(config_path)
+        self.names = names_resolver or NamesResolver(STATE_PATH if self.path == CONFIG_PATH else
+                                                     self.path.parent / 'disabled-api-state.sqlite3')
         self.media_store = media_store or (MediaStore() if self.path == CONFIG_PATH else
                                            MediaStore(self.path.parent / 'disabled-wamedia.sqlite3',
                                                       self.path.parent / 'disabled-wamedia'))
@@ -217,6 +221,7 @@ class WhatsAppAdapter(CachedAdapter):
                     self._fail(tick)
                     self.session_status = status
                 else:
+                    labels = self.names.snapshot()
                     owner = (info.get('me') or {}).get('id', '')
                     suffix = owner.split('@')[0][-4:] if isinstance(owner, str) and CHAT_ID.fullmatch(owner) else ''
                     self.account = 'WhatsApp · ****' + suffix
@@ -237,10 +242,12 @@ class WhatsAppAdapter(CachedAdapter):
                             message = self._media_failure(message)
                         if message is None:
                             continue
-                        name = chat.get('name')
-                        name = name[:1000] if isinstance(name, str) and name.strip() else 'WhatsApp ·' + cid.split('@')[0][-4:]
-                        conv = conversation(self.name, self.label, self.account, cid, name,
+                        resolved = labels.contact(cid, channel='whatsapp', provided_name=chat.get('name'))
+                        conv = conversation(self.name, self.label, self.account, cid, resolved.value,
                                             [message], is_group=cid.endswith('@g.us'))
+                        country = labels.country(cid, channel='whatsapp')
+                        conv.update(country=country[0] if country else '', name_missing=not resolved.named,
+                                    name_missing_reason=resolved.reason)
                         raw[conv['key']] = conv
                     self.chats_total = len(valid_ids)
                     self._raw, self.ready, self._until = raw, True, tick + 30

@@ -1,5 +1,6 @@
 """Language settings and reviewable text only; no channel writes or send calls."""
 import os
+import json
 import re
 import time
 
@@ -8,18 +9,18 @@ from console.inbox import ai as inbox_ai
 from console.inbox.model import decode_key
 from console.roles.storage import run_lock
 from . import prompts
-from .detection import CODES, COUNTRIES, LANGUAGES, vote
+from .detection import CODES, COUNTRIES, LANGUAGES, vote, needs_chinese_translation
 from .protection import facts, validate
 from .storage import DEFAULT_TERMS, LANG_PATH, RateLimited, Store
 from .translation import chunks, digest, translate_blocks
 
 FIELDS = {
-    'settings': {'my_language', 'auto_native_send'},
+    'settings': {'my_language', 'auto_native_send', 'auto_translate_incoming'},
     'glossary_save': {'id', 'term', 'mode', 'translation'},
     'glossary_delete': {'id'},
     'contact': {'conversation_key', 'native_language', 'locked'},
     'detect': {'conversation_key'},
-    'translate': {'conversation_key', 'target_language', 'message_indices'},
+    'translate': {'conversation_key', 'target_language', 'message_indices', 'mode', 'conversation_keys'},
     'compose': {'conversation_key', 'text'},
 }
 
@@ -57,9 +58,10 @@ class Lang:
 
     def _settings(self):
         with self.store.read() as db:
-            row = db.execute('SELECT my_language,auto_native_send FROM settings WHERE id=1').fetchone() if db else None
-        return dict(my_language=row['my_language'], auto_native_send=bool(row['auto_native_send'])) if row else dict(
-            my_language='zh-CN', auto_native_send=True)
+            row = db.execute('SELECT * FROM settings WHERE id=1').fetchone() if db else None
+        return dict(my_language=row['my_language'], auto_native_send=bool(row['auto_native_send']),
+                    auto_translate_incoming=bool(row['auto_translate_incoming']) if 'auto_translate_incoming' in row.keys() else True) if row else dict(
+            my_language='zh-CN', auto_native_send=True, auto_translate_incoming=True)
 
     def _glossary(self):
         with self.store.read() as db:
@@ -129,13 +131,19 @@ class Lang:
                 target = language(fields.get('my_language', old['my_language']))
                 toggle = fields.get('auto_native_send', '1' if old['auto_native_send'] else '0')
                 if toggle not in ('0', '1'):
-                    raise BadRequest('请明确选择是否默认按客户母语起草')
+                    raise BadRequest('请选择回复是否同时附当地语言')
+                incoming = fields.get('auto_translate_incoming', '1' if old['auto_translate_incoming'] else '0')
+                if incoming not in ('0', '1'):
+                    raise BadRequest('请选择是否自动翻译收到的消息')
                 with self.store.write() as db:
-                    db.execute('UPDATE settings SET my_language=?,auto_native_send=? WHERE id=1', (target, int(toggle)))
+                    db.execute('UPDATE settings SET my_language=?,auto_native_send=?,auto_translate_incoming=? WHERE id=1',
+                               (target, int(toggle), int(incoming)))
                     self.store.audit(db, self.clock(), who, operation, fields)
                 return self.read('settings')
             if operation.startswith('glossary_'):
                 return self._write_glossary(operation, fields, who)
+            if operation == 'translate' and fields.get('mode') == 'preview':
+                return self._previews(fields)
             conv = self._conversation(fields.get('conversation_key', ''))
             if operation == 'contact':
                 locked = fields.get('locked', '1')
@@ -204,6 +212,12 @@ class Lang:
         elif texts:
             try:
                 output = inbox_ai._answer_text(self.invoke(prompts.detection(texts[-10:])))
+                try:
+                    from console.ai_gateway import unfence
+                    detected = json.loads(unfence(output))
+                    output = '语言：%s\n把握：%s' % (detected['language'], detected['confidence'])
+                except (ValueError, KeyError, TypeError):
+                    pass
                 match = re.fullmatch(r'\s*语言[:：]\s*([a-zA-Z-]+)\s*\n把握[:：]\s*(0(?:\.\d{1,3})?|1(?:\.0{1,3})?)\s*', output)
                 if match and match[1] in CODES and float(match[2]) >= .85:
                     # Existing language cannot be overturned by a lone ambiguous line.
@@ -230,8 +244,23 @@ class Lang:
                 chunks=[dict(index=i, text=entry.get('text'), error=entry.get('error')) for i, entry in enumerate(entries)]))
         return dict(target_language=target, items=items)
 
+    def _groups(self, messages, indices):
+        groups, entries, glossary = [], [], self._glossary()
+        for index in indices:
+            source = messages[index]['text']
+            if len(source) > 64000:
+                raise BadRequest('这条消息超过 64000 字，请拆成较短文本后分段翻译')
+            parts = [dict(source=part, text=None, error='这一块尚未完成，请单独重试') for part in chunks(source, glossary=glossary)]
+            groups.append((index, source, parts))
+            entries.extend(parts)
+        return groups, entries, glossary
+
     def _translate(self, conv, fields):
-        target = language(fields.get('target_language') or self._settings()['my_language'])
+        mode = fields.get('mode', 'manual')
+        if mode not in ('manual', 'auto', 'cached') or 'conversation_keys' in fields:
+            raise BadRequest('翻译方式无效，请重新打开会话')
+        automatic = mode != 'manual'
+        target = 'zh-CN' if automatic else language(fields.get('target_language') or self._settings()['my_language'])
         messages = conv['messages'][-300:]
         raw = fields.get('message_indices', '')
         if raw:
@@ -241,55 +270,119 @@ class Lang:
             if len(set(indices)) != len(indices) or any(i >= len(messages) for i in indices):
                 raise BadRequest('消息序号无效或重复，请刷新会话后重试')
         else:
-            indices = list(range(max(0, len(messages) - 20), len(messages)))
-        groups, entries, glossary = [], [], self._glossary()
-        for index in indices:
-            source = messages[index]['text']
-            if len(source) > 64000:
-                raise BadRequest('这条消息超过 64000 字，请拆成较短文本后分段翻译')
-            parts = [dict(source=part, text=None, error='这一块尚未完成，请单独重试') for part in chunks(source, glossary=glossary)]
-            groups.append((index, source, parts))
-            entries.extend(parts)
+            indices = list(range(len(messages))) if automatic else list(range(max(0, len(messages) - 20), len(messages)))
+        if automatic:
+            indices = [i for i in indices if needs_chinese_translation(messages[i])]
+        groups, entries, glossary = self._groups(messages, indices)
         try:
-            translate_blocks(self, entries, target, glossary)
+            translate_blocks(self, entries, target, glossary,
+                             cache_only=mode == 'cached' or (automatic and not self._settings()['auto_translate_incoming']))
         except RateLimited as error:
-            error.result = self._translation_view(groups, target)
+            result = self._translation_view(groups, target)
+            if automatic:
+                return dict(result, quota_exhausted=True, retry_after=error.retry_after, hint=str(error))
+            error.result = result
             raise
-        return self._translation_view(groups, target)
+        return dict(self._translation_view(groups, target), quota_exhausted=False)
+
+    def _previews(self, fields):
+        if set(fields) - {'mode', 'conversation_keys'}:
+            raise BadRequest('会话预览含有不支持的字段')
+        try:
+            keys = json.loads(fields.get('conversation_keys', ''))
+        except ValueError:
+            raise BadRequest('会话列表无效，请刷新后重试') from None
+        if not isinstance(keys, list) or len(keys) > 40 or any(not isinstance(k, str) for k in keys):
+            raise BadRequest('每次最多读取 40 个会话预览')
+        for key in keys:
+            try:
+                decode_key(key, 'conversation')
+            except ValueError:
+                raise BadRequest('会话标识无效，请刷新列表') from None
+        # Snapshot only: preview lookup must not fetch lazy channel histories or call a model.
+        conversations = self.inbox.read()['conversations']
+        previews = []
+        for key in dict.fromkeys(keys):
+            conv = conversations.get(key)
+            if not conv or not conv['messages'] or len(conv['messages'][-1]['text']) > 64000:
+                continue
+            groups, entries, glossary = self._groups(conv['messages'][-1:], [0])
+            translate_blocks(self, entries, 'zh-CN', glossary, cache_only=True)
+            item = self._translation_view(groups, 'zh-CN')['items'][0]
+            if item['complete'] and item['text']:
+                previews.append(dict(conversation_key=key, source_text=groups[0][1][:140], text=item['text'][:140]))
+        return dict(previews=previews)
+
+    def pretranslate(self, limit=20):
+        """Translate at most limit recent incoming messages; never send or alter inbox rows."""
+        if type(limit) is not int or not 1 <= limit <= 300:
+            raise BadRequest('每次预翻译条数须为 1 至 300')
+        with run_lock(self.store):
+            if not self._settings()['auto_translate_incoming']:
+                return dict(attempted=0, translated=0, disabled=True)
+            now = self.clock()
+            conversations = self.inbox.read()['conversations']
+            recent = [m for conv in conversations.values() for m in conv['messages']
+                      if isinstance(m.get('sent_at'), (float, int)) and now - 48 * 3600 <= m['sent_at'] <= now
+                      and len(m.get('text', '')) <= 64000 and needs_chinese_translation(m)]
+            recent.sort(key=lambda m: m['sent_at'], reverse=True)
+            groups, entries, glossary = self._groups(recent, range(len(recent)))
+            translate_blocks(self, entries, 'zh-CN', glossary, cache_only=True)
+            selected = [group for group in groups if any(p['text'] is None for p in group[2])][:limit]
+            pending = [part for _, _, parts in selected for part in parts]
+            result = dict(attempted=len(selected), translated=0, quota_exhausted=False)
+            try:
+                translate_blocks(self, pending, 'zh-CN', glossary)
+            except RateLimited as error:
+                result.update(quota_exhausted=True, retry_after=error.retry_after, hint=str(error))
+            result['translated'] = sum(all(p['text'] is not None for p in parts) for _, _, parts in selected)
+            return result
 
     def _compose(self, conv, fields, who):
         contact = self._contact(conv)
         native = contact['native_language']
-        if not native or (contact['source'] != 'manual' and contact['confidence'] < .8):
-            raise BadRequest('还不知道客户母语，不能起草母语版。请先识别并核对，或手动锁定客户语言')
+        if contact['source'] != 'manual' and contact['confidence'] < .8:
+            native = None
         source = fields.get('text', '').strip()
         if not source or len(source) > 4000:
-            raise BadRequest('请填写 1 至 4000 字的原稿，再生成客户母语版')
-        glossary, mine = self._glossary(), self._settings()['my_language']
-        first = [dict(source=part, text=None, error=None) for part in chunks(source, glossary=glossary)]
-        translate_blocks(self, first, native, glossary, strict=False)
-        if any(entry.get('text') is None for entry in first):
-            raise BadRequest('母语稿的数字、型号、金额、链接或术语未通过校验，请重新生成；成功的块已缓存')
-        translated = ''.join(entry['text'] for entry in first)
-        back = [dict(source=part, text=None, error=None) for part in chunks(translated, glossary=glossary)]
-        try:
+            raise BadRequest('请填写 1 至 4000 字的原稿，再生成回复稿')
+        settings, glossary = self._settings(), self._glossary()
+        mine = settings['my_language']
+        targets = ['en']
+        if settings['auto_native_send'] and native and native != 'en':
+            targets.append(native)
+        versions, warnings = [], []
+        for target in targets:
+            label = '英文版' if target == 'en' else '当地语言版'
+            first = [dict(source=part, text=None, error=None) for part in chunks(source, glossary=glossary)]
+            translate_blocks(self, first, target, glossary, strict=False)
+            if any(entry.get('text') is None for entry in first):
+                raise BadRequest(label + '的格式或保留片段未通过校验，请重新生成；成功的块已缓存')
+            translated = ''.join(entry['text'] for entry in first)
+            back = [dict(source=part, text=None, error=None) for part in chunks(translated, glossary=glossary)]
             translate_blocks(self, back, mine, glossary, strict=False)
-        except RateLimited as error:
-            error.result = dict(text=translated, native_language=native, back_translation=None, my_language=mine,
-                                warnings=[dict(kind='error', message='核对稿还未生成，请稍后重试；母语稿已缓存', fragments=[])])
-            raise
-        if any(entry.get('text') is None for entry in back):
-            raise BadRequest('母语稿已缓存，但回译核对稿的格式或保留片段未通过校验，请重试后核对')
-        check = validate(source, translated, glossary)
-        back_check = validate(translated, ''.join(entry['text'] for entry in back), glossary)
-        safe = check['ok'] and back_check['ok']
-        fragments = check['missing'] + check['added'] + back_check['missing'] + back_check['added']
-        warnings = [dict(kind='error' if not safe else 'info',
-                         message='母语稿或核对稿的数字、型号、金额、链接或术语有增减，请核对红色提示后重新生成' if not safe else
-                         '已核对保留片段；请继续核对语气、含义与回译稿，采用后仍需人工确认发送', fragments=fragments)]
-        check['ok'] = safe
+            if any(entry.get('text') is None for entry in back):
+                raise BadRequest(label + '已缓存，但回译核对稿未通过校验，请重试后核对')
+            back_text = ''.join(entry['text'] for entry in back)
+            check, back_check = validate(source, translated, glossary), validate(translated, back_text, glossary)
+            safe = check['ok'] and back_check['ok']
+            fragments = list(dict.fromkeys(check['missing'] + check['added'] + back_check['missing'] + back_check['added']))
+            warnings.append(dict(kind='info' if safe else 'error',
+                message=label + ('已核对数字、型号、金额和链接；请继续核对含义，采用后仍需人工确认发送' if safe else
+                                '或回译稿的数字、型号、金额、链接或术语有增减，请核对红色提示后重新生成'), fragments=fragments))
+            versions.append(dict(language=target, text=translated, back_translation=back_text,
+                                 validation=check, back_validation=back_check))
+        def combined(name):
+            checks = [v[name] for v in versions]
+            return dict(ok=all(c['ok'] for c in checks),
+                        missing=list(dict.fromkeys(f for c in checks for f in c['missing'])),
+                        added=list(dict.fromkeys(f for c in checks for f in c['added'])))
+        check, back_check = combined('validation'), combined('back_validation')
+        check['ok'] = check['ok'] and back_check['ok']
         with self.store.write() as db:
             self.store.audit(db, self.clock(), who, 'compose', ('native_language', 'my_language', 'validation'))
-        return dict(native_language=native, my_language=mine, text=translated,
-                    back_translation=''.join(entry['text'] for entry in back), warnings=warnings, validation=check,
-                    back_validation=back_check, contact=contact)
+        return dict(native_language=native, my_language=mine, text='\n\n'.join(v['text'] for v in versions),
+                    english_text=versions[0]['text'], local_text=versions[1]['text'] if len(versions) > 1 else None,
+                    include_local=settings['auto_native_send'], versions=versions,
+                    back_translation='\n\n'.join(v['back_translation'] for v in versions), warnings=warnings,
+                    validation=check, back_validation=back_check, contact=contact)

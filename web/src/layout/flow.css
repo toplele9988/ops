@@ -1,0 +1,10 @@
+.sider > .flow-nav-close { display: none; }
+/* The shared intro participates in the existing full-height inbox layout. */
+.page[data-page="inbox"] { display: flex; flex-direction: column; }
+.page[data-page="inbox"] > .page-intro { flex-shrink: 0; margin: 12px 12px 8px; }
+.page[data-page="inbox"] > p { flex-shrink: 0; margin: 0 12px 8px; }
+.page[data-page="inbox"] > .inbox { flex: 1; min-height: 0; height: auto; }
+@media (max-width: 900px) {
+  .sider > .flow-nav-close { display: flex; align-items: center; gap: 8px; min-height: 44px; margin-left: auto; }
+  .sider .nav-item { min-height: 44px; }
+}

@@ -26,39 +26,39 @@ export interface NavItem {
 }
 
 const PAGES: NavItem[] = [
-  { key: "supplier-dossiers", label: "供应商档案", path: "/supplier-dossiers", kind: "live", area: "front", group: "产品与供应商", icon: Factory },
-  { key: "product-dossiers", label: "产品档案", path: "/product-dossiers", kind: "live", area: "front", group: "产品与供应商", icon: Boxes },
-  { key: "dossier-gaps", label: "缺资料", path: "/dossier-gaps", kind: "live", area: "front", group: "产品与供应商", icon: ClipboardCheck },
-  { key: "overview", label: "总览", path: "/", kind: "live", area: "front", group: "日常工作", icon: LayoutDashboard },
-  { key: "guide", label: "怎么用", path: "/guide", kind: "live", area: "front", group: "日常工作", icon: BookOpenText },
-  { key: "workbench", label: "工作台", path: "/workbench", kind: "live", area: "front", group: "日常工作", icon: Home },
-  { key: "triage", label: "待整理会话", path: "/triage", kind: "live", area: "back", group: "整理工具", icon: Sparkles },
-  { key: "deals", label: "案子", path: "/deals", kind: "live", area: "front", group: "日常工作", icon: Briefcase },
-  { key: "fulfil", label: "备货与发货", path: "/fulfilment", kind: "live", area: "front", group: "日常工作", icon: Truck },
-  { key: "inbox", label: "商机沟通", path: "/inbox", kind: "live", area: "front", group: "日常工作", icon: Inbox },
-  { key: "outbox", label: "草稿未发送", path: "/outbox", kind: "live", area: "front", group: "日常工作", icon: Inbox },
-  { key: "customers", label: "客户", path: "/customers", kind: "live", area: "front", group: "日常工作", icon: Users },
+  { key: "supplier-dossiers", label: "供应商", path: "/supplier-dossiers", kind: "live", area: "front", group: "供应与产品", icon: Factory },
+  { key: "product-dossiers", label: "产品", path: "/product-dossiers", kind: "live", area: "front", group: "供应与产品", icon: Boxes },
+  { key: "dossier-gaps", label: "缺资料", path: "/dossier-gaps", kind: "live", area: "front", group: "供应与产品", icon: ClipboardCheck },
+  { key: "overview", label: "首页", path: "/", kind: "live", area: "front", group: "今天", icon: LayoutDashboard },
+  { key: "guide", label: "怎么用", path: "/guide", kind: "live", area: "back", group: "使用与改进", icon: BookOpenText },
+  { key: "workbench", label: "待我处理", path: "/workbench", kind: "live", area: "front", group: "今天", icon: Home },
+  { key: "triage", label: "待确认归属", path: "/triage", kind: "live", area: "front", group: "沟通", icon: Sparkles },
+  { key: "deals", label: "案子", path: "/deals", kind: "live", area: "front", group: "客户与生意", icon: Briefcase },
+  { key: "fulfil", label: "备货与发货", path: "/fulfilment", kind: "live", area: "front", group: "客户与生意", icon: Truck },
+  { key: "inbox", label: "消息", path: "/inbox", kind: "live", area: "front", group: "沟通", icon: Inbox },
+  { key: "outbox", label: "草稿未发送", path: "/outbox", kind: "live", area: "front", group: "沟通", icon: Inbox },
+  { key: "customers", label: "客户", path: "/customers", kind: "live", area: "front", group: "客户与生意", icon: Users },
   { key: "directory", label: "微信通讯录", path: "/directory", kind: "live", area: "back", group: "整理工具", icon: BookUser },
   { key: "classification-review", label: "待分类", path: "/classify", kind: "live", area: "back", group: "整理工具", icon: Tags },
   { key: "audit", label: "数据体检", path: "/audit", kind: "live", area: "back", group: "整理工具", icon: Stethoscope },
-  { key: "search", label: "知识检索", path: "/search", kind: "live", area: "front", group: "日常工作", icon: Search },
-  { key: "suppliers", label: "供应商", path: "/suppliers", kind: "live", area: "front", group: "产品与供应商", icon: Factory },
-  { key: "products", label: "产品", path: "/products", kind: "live", area: "front", group: "产品与供应商", icon: Boxes },
+  { key: "search", label: "知识检索", path: "/search", kind: "live", area: "front", group: "AI 助手", icon: Search },
+  { key: "suppliers", label: "供应商旧列表", path: "/suppliers", kind: "live", area: "back", group: "资料维护", icon: Factory },
+  { key: "products", label: "产品旧列表", path: "/products", kind: "live", area: "back", group: "资料维护", icon: Boxes },
   { key: "freight", label: "货代运价", path: "/freight", kind: "live", area: "back", group: "整理工具", icon: Ship },
   { key: "prices", label: "价格建议", path: "/prices", kind: "live", area: "back", group: "整理工具", icon: Tags },
   { key: "packing", label: "供应商包装核对", path: "/packing", kind: "live", area: "back", group: "整理工具", icon: PackageSearch },
-  { key: "roles", label: "AI 员工", path: "/roles", kind: "live", area: "front", group: "学习与改进", icon: Bot },
-  { key: "operator", label: "AI 运营员", path: "/operator", kind: "live", area: "front", group: "日常工作", icon: Bot },
-  { key: "inspiration", label: "AI 开发灵感库", path: "/inspiration", kind: "live", area: "front", group: "学习与改进", icon: Lightbulb },
+  { key: "roles", label: "AI 员工", path: "/roles", kind: "live", area: "back", group: "使用与改进", icon: Bot },
+  { key: "operator", label: "AI 运营员", path: "/operator", kind: "live", area: "front", group: "AI 助手", icon: Bot },
+  { key: "inspiration", label: "灵感库", path: "/inspiration", kind: "live", area: "back", group: "使用与改进", icon: Lightbulb },
   { key: "requirements", label: "需求与验收", path: "/requirements", kind: "live", area: "back", group: "整理工具", icon: ClipboardCheck },
   {
-    key: "quotes", label: "报价与订单", path: "/quotes", kind: "plan", area: "front", group: "规划中", icon: Receipt,
+    key: "quotes", label: "报价与订单", path: "/quotes", kind: "plan", area: "back", group: "规划中", icon: Receipt,
     purpose: "客户问价时，自动算出 FOB、DDP 到门价，并提醒产品加运费是否倒挂；报价后跟进订单、物流和收款。",
     needs: "供应商装箱尺寸和毛重要先核准，再加上物流线路和运价。",
     step: "第 2 阶段",
   },
   {
-    key: "listing", label: "发品", path: "/listing", kind: "plan", area: "front", group: "规划中", icon: Store,
+    key: "listing", label: "发品", path: "/listing", kind: "plan", area: "back", group: "规划中", icon: Store,
     purpose: "从核准过的产品资料自动生成阿里国际站和独立站的商品草稿，你审核后发布。",
     needs: "产品资料先核准完整，再接发品规则和图片。",
     step: "第 5 阶段",
@@ -89,15 +89,19 @@ const PAGES: NavItem[] = [
 
 // Fixed business order; hidden pages never become navigation by registering a route.
 const ORDER = [
-  "overview", "inbox", "deals", "customers", "supplier-dossiers", "product-dossiers", "dossier-gaps",
-  "fulfil", "search", "roles", "operator",
+  "overview", "workbench",
+  "inbox", "triage", "outbox",
+  "customers", "deals", "fulfil",
+  "supplier-dossiers", "product-dossiers", "dossier-gaps",
+  "operator", "search",
   "channels", "pipeline", "alibaba-open", "knowledge", "language", "admin",
-  "triage", "classification-review", "directory", "audit", "freight", "prices", "packing", "requirements",
+  "classification-review", "directory", "audit", "freight", "prices", "packing", "requirements",
+  "suppliers", "products", "roles", "inspiration", "guide",
 ];
 export const NAV: NavItem[] = ORDER.map((key) => {
   const page = PAGES.find((item) => item.key === key);
   if (!page) throw new Error(`Missing navigation page: ${key}`);
-  return { ...page, group: page.area === "front" ? "运营台" : page.group };
+  return page;
 });
 export const PLANNED_PAGES = PAGES.filter((item) => item.kind === "plan");
 export const findNav = (pathname: string) => {

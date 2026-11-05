@@ -221,7 +221,7 @@ class AdapterTests(unittest.TestCase):
         convs = adapter.list_conversations(NOW)
         self.assertEqual(len(convs), 2)
         self.assertEqual(adapter.health(NOW)['chats_total'], 3)
-        self.assertIn('WhatsApp ·1111', {c['buyer_name'] for c in convs.values()})
+        self.assertIn('+1 5550001111', {c['buyer_name'] for c in convs.values()})
         self.assertIn('[视频]', {m['text'] for c in convs.values() for m in c['messages']})
         self.assertNotIn('/fictional/private', json.dumps(convs))
 

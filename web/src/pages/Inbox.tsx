@@ -8,7 +8,8 @@ import { uuid } from "../lib_uuid";
 import { Chip, Empty, SearchField, Skeleton } from "../ui/bits";
 import { Segmented } from "../ui/Segmented";
 import { InboxBlock } from "./inbox/Attachment";
-import { MessageTranslationControl, TranslationToolbar, useConversationTranslation } from "../ui/LanguagePanels";
+import { MessageTranslationControl, TranslationToolbar, useConversationTranslation } from "./inbox/LanguagePanels";
+import { translationPreviews } from "../lang";
 import { inboxContext, type Conv, type Detail, type Draft, type Result } from "../ops/inbox";
 import { Operations, Reply } from "./inbox/Operations";
 import { PageIntro } from "./overview/PageIntro";
@@ -49,10 +50,9 @@ function Conversation({ convKey, onBack }: { convKey: string; onBack: () => void
         {!messages.length && <Empty title="还没有消息" action={<button className="btn" onClick={() => detail.refetch()}>刷新对话</button>}>收到消息后就能开始回复。</Empty>}
         {messages.map((m, i) => { const t = translation.message(i); return <article key={i} className={`bubble ${m.role === "seller" ? "me" : "them"}`}>
           {m.sender_label && <span className="t-cap">{m.sender_label}</span>}
-          <div className="bubble-text">{m.blocks?.length ? m.blocks.map((block, n) => <InboxBlock key={n} block={block} />) : m.text}</div>
+          <div className="bubble-text">{m.blocks?.length ? m.blocks.map((block, n) => t.hideOriginal && block.type === "text" ? null : <InboxBlock key={n} block={block} />) : !t.hideOriginal && m.text}</div>
           <span className="t-cap bubble-time">{formatTime(m.sent_at)}</span>
           {m.text.trim() && <MessageTranslationControl state={t} busy={translation.busy} />}
-          {t.showing && t.item?.text && <div className="quote">{t.item.text}</div>}
         </article>; })}
         {context.data?.outbox.map((row) => <article key={row.id} className="inbox-queue" data-testid="dry-run-record"><b>{row.state === "draft" ? "供应商询问草稿（演练）" : "已进入发送队列（演练）"}</b><p>{row.text}</p>{row.conversation_key !== convKey && <Link className="btn sm" to={`/inbox?role=all&conversation=${row.conversation_key}`}>打开供应商会话</Link>}</article>)}
       </div>
@@ -90,6 +90,8 @@ export function Inbox() {
   const summary = useQuery({ queryKey: ["inbox", "summary"], queryFn: () => get<Summary>("/api/v1/inbox/summary"), retry: false, refetchInterval: 10000 });
   useEffect(() => { const next = summary.data; if (!next) return; if (previous.current && next.revision && previous.current.revision !== next.revision) { setNewMessage(true); void client.invalidateQueries({ queryKey: ["inbox", "list"] }); } previous.current = next; }, [summary.data, client]);
   const list = useQuery({ queryKey: ["inbox", "list", state, channel, q, role, page], queryFn: () => get<{ items: Conv[]; total: number; ready: boolean }>(`/api/v1/inbox/conversations${qs({ state, channel, q, role, page, page_size: 40 })}`), retry: false, placeholderData: keepPreviousData, refetchInterval: 15000 });
+  const previews = useQuery({ queryKey: ["lang-previews", list.data?.items.map(c => [c.key, c.last.text])], queryFn: () => translationPreviews((list.data?.items ?? []).map(c => c.key)), enabled: Boolean(list.data?.items.length), retry: false, refetchInterval: 15000 });
+  const previewText = (c: Conv) => previews.data?.find(p => p.conversation_key === c.key && p.source_text === c.last.text)?.text ?? c.last.text;
   const refresh = () => { void client.invalidateQueries({ queryKey: ["inbox"] }); };
   return <><PageIntro page="inbox" /><p><Link to="/outbox">查看草稿未发送</Link></p><div className="inbox inbox-ops" data-open={Boolean(selected)}>
     <section className="pane listing" aria-label="会话列表">
@@ -107,7 +109,7 @@ export function Inbox() {
         {list.isError && <Empty title="没能读到会话" action={<button className="btn" onClick={() => list.refetch()}>重新读取</button>}>{list.error.message}</Empty>}
         {list.data?.items.length === 0 && <Empty title={q ? "没有找到匹配会话" : list.data.ready === false ? "还没收到渠道消息" : state === "waiting" ? "暂时没有要回复的会话" : "这里还没有会话"} action={<div className="inbox-actions"><button className="btn" onClick={() => set({ q: "", channel: "", state: "all", role: "all" })}>查看全部会话</button><button className="btn" onClick={refresh}>刷新会话</button>{list.data.ready === false && <Link className="btn" to="/system/channels">去接入渠道</Link>}</div>}>{list.data.ready === false ? "先接入渠道，收到的询盘会显示在这里。" : "当前筛选下没有会话，可查看全部或刷新新消息。"}</Empty>}
         <ul className="conv-list">{list.data?.items.map((c) => <li key={c.key}>
-          <button className="conv" aria-current={c.key === selected ? "true" : undefined} onClick={() => set({ c: c.key })}><span className="avatar">{c.buyer_name[0] ?? "?"}</span><span className="conv-main"><span className="conv-top"><b className="conv-name">{c.buyer_name}</b><span className="t-cap">{ago(c.last.sent_at)}</span></span><span className="conv-snip">{c.last.text}</span><span className="t-foot">归属：{c.customer_name || "待归到客户"}</span><span className="conv-tags"><Chip>{c.channel_label}</Chip><Chip tone={c.workflow_state === "waiting" ? "orange" : "plain"}>{c.workflow_state === "done" ? "已处理" : c.workflow_state === "replied" ? "等对方" : "要我回复"}</Chip>{c.waiting_hours != null && <span className="t-cap">{c.waiting_hours < 1 ? "刚刚收到" : `等了 ${Math.round(c.waiting_hours)} 小时`}</span>}{c.remind_at && <span className="t-cap">提醒：{formatTime(c.remind_at)}</span>}</span></span></button>
+          <button className="conv" aria-current={c.key === selected ? "true" : undefined} onClick={() => set({ c: c.key })}><span className="avatar">{c.buyer_name[0] ?? "?"}</span><span className="conv-main"><span className="conv-top"><b className="conv-name">{c.buyer_name}</b><span className="t-cap">{ago(c.last.sent_at)}</span></span><span className="conv-snip">{previewText(c)}</span><span className="t-foot">归属：{c.customer_name || "待归到客户"}</span><span className="conv-tags"><Chip>{c.channel_label}</Chip><Chip tone={c.workflow_state === "waiting" ? "orange" : "plain"}>{c.workflow_state === "done" ? "已处理" : c.workflow_state === "replied" ? "等对方" : "要我回复"}</Chip>{c.waiting_hours != null && <span className="t-cap">{c.waiting_hours < 1 ? "刚刚收到" : `等了 ${Math.round(c.waiting_hours)} 小时`}</span>}{c.remind_at && <span className="t-cap">提醒：{formatTime(c.remind_at)}</span>}</span></span></button>
           <button className="btn sm inbox-next" onClick={() => set({ c: c.key })}>处理询盘</button>
         </li>)}</ul>
         {list.data && list.data.total > 40 && <div className="pager"><button className="btn" disabled={page === 1} onClick={() => setPage(page - 1)}>上一页</button><span>{page} / {Math.ceil(list.data.total / 40)}</span><button className="btn" disabled={page * 40 >= list.data.total} onClick={() => setPage(page + 1)}>下一页</button></div>}

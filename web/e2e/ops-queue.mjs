@@ -26,7 +26,7 @@ try {
     });
     const queue = () => page.getByTestId("today-queue");
     const count = async (number) => { await page.waitForFunction((n) => document.querySelectorAll(".queue-item").length === n, number); assert.equal(await page.locator(".queue-item").count(), number); };
-    const home = async () => { await page.goto(server.base + "/app/"); await queue().getByRole("heading", { name: "今天要做的事" }).waitFor(); await count(state.items.length); };
+    const home = async () => { await page.goto(server.base + "/app/workbench"); await queue().getByRole("heading", { name: "今天要做的事" }).waitFor(); await count(state.items.length); };
     await page.clock.install({ time: new Date("2030-01-01T08:00:00+08:00") });
     await home();
     assert.equal(await page.locator(".queue-item").first().getAttribute("data-kind"), "pipeline");
@@ -105,9 +105,9 @@ try {
     await page.getByRole("complementary", { name: "这页怎么用" }).waitFor();
     await page.goto(server.base + "/app/guide");
     assert.equal(await page.locator(".queue-guide > li").count(), 8);
-    const destinations = ["/app", "/app/inbox", "/app/deals", "/app/customers", "/app/suppliers", "/app/deals", "/app/fulfilment", "/app/search"];
+    const destinations = ["/app/workbench", "/app/inbox", "/app/deals", "/app/customers", "/app/supplier-dossiers", "/app/deals", "/app/fulfilment", "/app/search"];
     for (let step = 0; step < 8; step++) {
-      const link = page.locator(".queue-guide > li").nth(step).getByRole("link", { name: /^去做/ }).first();
+      const link = page.locator(".queue-guide > li").nth(step).getByRole("link", { name: /^(去做|打开待我处理)/ }).first();
       const bounds = await link.boundingBox();
       assert.ok(bounds.width <= viewport.width && bounds.height >= 44, "Action fits and is tappable");
       await link.click();
@@ -120,7 +120,8 @@ try {
     await page.goBack();
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2));
     await page.screenshot({ path: `${out}/${name}-八步指引.png`, fullPage: true });
-    assert.equal(state.calls.filter((c) => c.method === "POST").length, 2, "Only draft and fulfilment node completion are allowed");
+    // Reading cached translations for the message list is a POST form but changes nothing.
+    assert.equal(state.calls.filter((c) => c.method === "POST" && !/\/lang\/translate$/.test(c.path || c.url || "")).length, 2, "Only draft and fulfilment node completion are allowed");
     assert.deepEqual(problems, []);
     results.push({ name, status: "PASS", posts: state.calls.filter((c) => c.method === "POST"), dryRunDrafts: state.outbox.length });
     console.log(`PASS ${name}: 7 类待办、深链接、dry-run 草稿、履约节点副作用、反馈与恢复、稍后到期、失败与不完整来源、8 步跳转`);

@@ -1,0 +1,65 @@
+.customers-page { display: grid; gap: 20px; min-width: 0; }
+.customers-intro { color: var(--label-2); max-width: 760px; margin-top: 8px; line-height: 1.65; }
+.customers-stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.customers-stages button { border: 1px solid var(--sep); border-radius: var(--r-ctl); background: var(--surface); padding: 14px; text-align: left; min-height: 86px; }
+.customers-stages button[aria-checked="true"] { border-color: var(--tint); background: var(--tint-weak); }
+.customers-stages button > span { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-weight: 600; }
+.customers-stages strong { font-size: 24px; }
+.customers-stages small { display: block; margin-top: 4px; color: var(--label-2); font-size: 12px; }
+.customers-toolbar, .customers-list-head, .customers-batch, .customers-meta, .customers-name, .customers-products { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.customers-toolbar .field { flex: 1; min-width: 180px; }
+.customers-toolbar .btn, .customers-toolbar select { min-height: 42px; }
+.customers-list-head { justify-content: space-between; }
+.customers-list-head h2 { margin-bottom: 4px; }
+.customers-batch label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }
+.customers-page input[type="checkbox"] { accent-color: var(--tint); width: 19px; height: 19px; margin: 0; flex: none; }
+.customers-list { display: grid; gap: 12px; min-width: 0; }
+.customers-card { background: var(--surface); border: 1px solid var(--sep); border-radius: var(--r-card); min-width: 0; overflow-wrap: anywhere; }
+.customers-card-main { display: flex; align-items: flex-start; gap: 14px; padding: 20px; }
+.customers-checkbox { margin-top: 10px !important; }
+.customers-card-content { flex: 1; min-width: 0; display: grid; gap: 10px; }
+.customers-name { gap: 8px; }
+.customers-name h3 { font-size: 17px; min-width: 0; }
+.customers-name-button { border: 0; color: var(--label); padding: 4px 0; min-height: 36px; background: transparent; font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.customers-name-button:hover { color: var(--tint); }
+.customers-meta { color: var(--label-2); font-size: 13px; gap: 12px; }
+.customers-channel { display: inline-flex; align-items: center; gap: 5px; }
+.customers-products { gap: 6px; }
+.customers-products > span:not(.t-foot) { padding: 3px 9px; border-radius: 6px; background: var(--fill); font-size: 13px; }
+.customers-summary { line-height: 1.65; }
+.customers-card-actions { display: grid; gap: 6px; flex: none; }
+.customers-page .customers-card-actions .btn, .customers-page .customers-batch .btn { min-height: 42px; }
+.customers-notice, .customers-loading { border-radius: var(--r-ctl); background: var(--fill); padding: 14px 16px; line-height: 1.6; }
+.customers-notice .btn { margin-left: 10px; }
+.customers-notice.success { background: var(--green-weak); }
+.customers-notice.error { background: var(--red-weak); }
+.customers-evidence-panel { border-top: 1px solid var(--sep); padding: 20px; display: grid; gap: 20px; }
+.customers-evidence-group { display: grid; gap: 10px; min-width: 0; }
+.customers-evidence { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.customers-evidence li { display: grid; gap: 8px; border-left: 3px solid var(--sep); padding: 8px 12px; background: var(--surface-2); }
+.customers-evidence strong { font-size: 14px; }
+.customers-quote { display: grid; gap: 6px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.customers-quote > span { font-size: 13px; }
+.customers-waiting { display: grid; gap: 12px; border-top: 1px solid var(--sep); padding-top: 24px; }
+.customers-back { margin-bottom: 20px; }
+@media (max-width: 1050px) {
+  .customers-stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .customers-card-main { flex-wrap: wrap; }
+  .customers-card-actions { display: flex; flex-wrap: wrap; width: 100%; padding-left: 33px; }
+}
+@media (max-width: 600px) {
+  .customers-page { gap: 16px; }
+  .customers-page .page-head { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .customers-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .customers-stages button { padding: 12px; min-height: 80px; }
+  .customers-stages button:last-child { grid-column: 1 / -1; }
+  .customers-toolbar { gap: 8px; }
+  .customers-toolbar .field { flex-basis: 100%; }
+  .customers-toolbar .select { flex: 1; min-width: 0; }
+  .customers-card-main, .customers-evidence-panel { padding: 14px; }
+  .customers-card-main { gap: 10px; }
+  .customers-card-actions { padding-left: 29px; }
+  .customers-name { align-items: flex-start; }
+  .customers-name h3 { width: 100%; }
+  .customers-batch { width: 100%; justify-content: space-between; gap: 6px; }
+}

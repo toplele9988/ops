@@ -2,6 +2,7 @@
 // Uses fictional data, a loopback static server and strict CSP; never calls a backend.
 import { chromium } from "playwright-core";
 import { checkOverview } from "./overview.mjs";
+import { familyKey } from "./fixtures.dossiers.mjs";
 
 import assert from "node:assert/strict";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
@@ -23,15 +24,15 @@ const WAIT = Number(process.env.WAIT ?? 250);
 const OVERVIEW_ONLY = process.env.ONLY === "overview";
 const ERROR_TEXT = /没能读到|没能打开|没能查到|暂时无法|请求没有成功|Something went wrong/;
 
-const FRONT = ["总览", "商机沟通", "案子", "客户", "供应商档案", "产品档案", "缺资料", "备货与发货", "知识检索", "AI 员工", "AI 运营员"];
-const FRONT_PATHS = ["/", "/inbox", "/deals", "/customers", "/supplier-dossiers", "/product-dossiers", "/dossier-gaps", "/fulfilment", "/search", "/roles", "/operator"];
-const BACK = ["渠道接入", "数据管道健康", "阿里订单接入", "知识中枢", "语言设置", "账号与权限旧后台", "待整理会话", "待分类", "微信通讯录", "数据体检", "货代运价", "价格建议", "供应商包装核对", "需求与验收"];
-const BACK_PATHS = ["/system/channels", "/system/pipeline", "/system/alibaba-open", "/system/knowledge", "/system/language", "/v3/admin", "/triage", "/classify", "/directory", "/audit", "/freight", "/prices", "/packing", "/requirements"];
-const BACK_TOOLS = new Set(["/triage", "/classify", "/directory", "/audit", "/freight", "/prices", "/packing", "/requirements"]);
+const FRONT = ["首页", "待我处理", "消息", "待确认归属", "草稿未发送", "客户", "案子", "备货与发货", "供应商", "产品", "缺资料", "AI 运营员", "知识检索"];
+const FRONT_PATHS = ["/", "/workbench", "/inbox", "/triage", "/outbox", "/customers", "/deals", "/fulfilment", "/supplier-dossiers", "/product-dossiers", "/dossier-gaps", "/operator", "/search"];
+const BACK = ["渠道接入", "数据管道健康", "阿里订单接入", "知识中枢", "语言设置", "账号与权限旧后台", "待分类", "微信通讯录", "数据体检", "货代运价", "价格建议", "供应商包装核对", "需求与验收", "供应商旧列表", "产品旧列表", "AI 员工", "灵感库", "怎么用"];
+const BACK_PATHS = ["/system/channels", "/system/pipeline", "/system/alibaba-open", "/system/knowledge", "/system/language", "/v3/admin", "/classify", "/directory", "/audit", "/freight", "/prices", "/packing", "/requirements", "/suppliers", "/products", "/roles", "/inspiration", "/guide"];
+const BACK_TOOLS = new Set([...BACK_PATHS, "/quotes", "/listing"]);
 
 async function checkNavigation(page, path, viewport) {
   const pathname = path.split("?")[0];
-  const back = pathname.startsWith("/system") || BACK_TOOLS.has(pathname);
+  const back = pathname.startsWith("/system") || BACK_TOOLS.has(pathname) || pathname.startsWith("/suppliers/");
   const modal = await page.locator("dialog[open]").count() > 0;
   if (viewport.width <= 900 && !modal) {
     await page.getByRole("button", { name: "打开导航", exact: true }).click();
@@ -46,13 +47,26 @@ async function checkNavigation(page, path, viewport) {
   const hrefs = await nav.locator("a").evaluateAll((links) => links.map((a) => a.getAttribute("href")));
   assert.deepEqual(hrefs, (back ? BACK_PATHS : FRONT_PATHS).map((path) => path.startsWith("/v3/") ? path : path === "/" ? "/app" : "/app" + path));
   assert.equal(hrefs.filter((href) => href.startsWith("/v3/")).length, back ? 1 : 0, "Only account admin may link to v3");
-  assert.doesNotMatch(await nav.innerText(), /旧版工具|规划中|怎么用|AI 开发灵感库|运行与数据状态/);
-  if (back) assert.deepEqual(await nav.locator(".nav-group").allTextContents(), ["渠道与数据", "设置", "整理工具"]);
+  assert.doesNotMatch(await nav.innerText(), /旧版工具|规划中|AI 开发灵感库|运行与数据状态/);
+  assert.deepEqual(await nav.locator(".nav-group").allTextContents(), back ? ["渠道与数据", "设置", "整理工具", "资料维护", "使用与改进"] : ["今天", "沟通", "客户与生意", "供应与产品", "AI 助手"]);
   if (pathname === "/" || pathname === "/overview") assert.equal(await nav.locator('a[aria-current="page"]').getAttribute("href"), "/app");
+  if (!modal) assert.equal(await page.getByRole("button", { name: "关闭导航", exact: true }).isVisible(), viewport.width <= 900);
   if (viewport.width <= 900 && !modal) {
     if (pathname === "/" || pathname === "/system") await page.screenshot({ path: `${OUT}/手机-${back ? "后台设置导航" : "运营台导航"}.png` });
     await page.locator(".scrim").click({ position: { x: viewport.width - 10, y: 100 } });
     await page.waitForFunction(() => document.querySelector(".sider").getBoundingClientRect().right <= 0);
+    if (pathname === "/") {
+      assert.equal(await page.locator(".sider").evaluate(node => node.inert), true, "Closed drawer is not in the Tab order");
+      await page.getByRole("button", { name: "打开导航", exact: true }).click();
+      await nav.locator("a").last().focus();
+      await page.keyboard.press("Tab");
+      assert.equal(await page.getByRole("button", { name: "关闭导航", exact: true }).evaluate(node => node === document.activeElement), true, "Tab wraps within mobile navigation");
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(await nav.locator("a").last().evaluate(node => node === document.activeElement), true);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => document.querySelector(".sider").getBoundingClientRect().right <= 0);
+      assert.equal(await page.getByRole("button", { name: "打开导航", exact: true }).evaluate(node => node === document.activeElement), true, "Escape returns focus to opener");
+    }
   }
 }
 
@@ -67,10 +81,14 @@ const PAGES = [
   ["系统总览", "/system"], ["渠道接入", "/system/channels"], ["数据管道健康", "/system/pipeline"], ["阿里订单接入", "/system/alibaba-open"], ["待分类", "/classify"], ["语言设置", "/system/language"], ["知识中枢", "/system/knowledge"], ["旧版工具", "/system/legacy"],
   ["规划报价保留页", "/quotes"], ["规划发品保留页", "/listing"], ["规划分类保留页", "/system/classify"], ["规划模型保留页", "/system/models"],
   ["客户资料", "/customers/1"], ["供应商资料", "/suppliers/3"],
+  ["供应商档案详情", "/supplier-dossiers/S1"], ["产品档案详情", `/product-dossiers/${familyKey}`],
   ["会话-客户", `/inbox?conversation=${conversationKey}`], ["会话-微信", `/inbox?channel=wechat&role=all&conversation=${supplierKey}`],
   ["草稿未发送", "/outbox"], ["案子页", "/deals/1"], ["报价页", "/quotes/1"], ["产品详情", "/products?status=candidate&open=1"],
 ];
-const VIEWPORTS = [["桌面", { width: 1440, height: 900 }], ["手机", { width: 400, height: 860 }]];
+// Optional device split for execution environments with short process lifetimes.
+const VIEWPORT_PRESETS = { desktop: ["桌面", { width: 1440, height: 900 }], mobile: ["手机", { width: 400, height: 860 }] };
+const VIEWPORTS = Object.entries(VIEWPORT_PRESETS).filter(([key]) => !process.env.VIEWPORT || process.env.VIEWPORT === key).map(([, value]) => value);
+assert.ok(VIEWPORTS.length, "VIEWPORT must be desktop or mobile when set");
 
 const browser = await chromium.launch({ ...(CHROME ? { executablePath: CHROME } : {}), args: ["--no-sandbox"] });
 const failures = [];
@@ -118,11 +136,14 @@ for (const [vname, viewport] of VIEWPORTS) {
       if (path === "/customers/1") assert.match(await page.locator(".contact-timeline").innerText(), /虚构产品报价/);
       if (path === "/suppliers/3") assert.match(await page.locator(".contact-timeline").innerText(), /虚构产品报价/);
       if (path === "/") {
-        assert.equal(await page.getByRole("heading", { name: "全局总览", exact: true }).isVisible(), true);
-        for (const text of ["今日运营", "今日成交简报", "等你回复的买家", "供应商资料待补", "成交结果"]) {
-          // The empty fixture has no won deals, so its conditional result block is absent.
-          if (text !== "成交结果") assert.equal(await page.getByRole("heading", { name: new RegExp(text) }).count() > 0, true, text);
-        }
+        assert.equal(await page.getByRole("heading", { name: "流程总览", exact: true }).isVisible(), true);
+        assert.equal(await page.locator("[data-flow-step]").count(), 7);
+        assert.equal(await page.getByRole("heading", { name: "渠道有没有进消息", exact: true }).isVisible(), true);
+      }
+      // Layout-level coverage keeps Customers and Inbox untouched and prevents duplicate intros.
+      if (FRONT_PATHS.includes(path.split("?")[0]) || /^\/(customers|deals|supplier-dossiers|product-dossiers|quotes)\//.test(path)) {
+        assert.equal(await page.locator("[data-page-intro]").count(), 1, "Exactly one page purpose and next step");
+        assert.match(await page.locator("[data-page-intro] p").innerText(), /；/);
       }
       if ((await page.locator("h1, .pane-head").count()) === 0) problems.push("页面没有标题（可能白屏）");
       const body = await page.locator("body").innerText();

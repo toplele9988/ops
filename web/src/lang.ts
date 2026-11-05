@@ -1,7 +1,7 @@
 import { ApiError, get, postForm, qs } from "./api";
 
 export interface Language { code: string; label: string }
-export interface LangSettings { my_language: string; auto_native_send: boolean }
+export interface LangSettings { my_language: string; auto_native_send: boolean; auto_translate_incoming: boolean }
 export interface SettingsResult { settings: LangSettings; languages: Language[]; quota: { hourly_limit: number; used: number; remaining: number } }
 export interface Term { id: number; term: string; mode: "keep" | "translate"; translation: string }
 export interface ContactLanguage {
@@ -12,9 +12,12 @@ export interface TranslationItem {
   index: number; source_hash: string; source_text: string; source_characters?: number; source_truncated?: boolean; text: string | null; error: string | null; cached: boolean; complete: boolean;
   chunks: { index: number; text: string | null; error: string | null }[];
 }
-export interface TranslationResult { target_language: string; items: TranslationItem[] }
+export interface TranslationResult { target_language: string; items: TranslationItem[]; quota_exhausted?: boolean; retry_after?: number; hint?: string }
+export interface Validation { ok: boolean; missing: string[]; added?: string[] }
+export interface ComposeVersion { language: string; text: string; back_translation: string; validation: Validation; back_validation: Validation }
 export interface ComposeResult {
-  native_language: string; my_language: string; text: string; back_translation: string;
+  native_language: string | null; my_language: string; text: string; back_translation: string;
+  english_text: string; local_text: string | null; include_local: boolean; versions: ComposeVersion[];
   warnings: { kind: string; message: string; fragments: string[] }[];
   validation: { ok: boolean; missing: string[] }; back_validation?: { ok: boolean; missing: string[] }; contact: ContactLanguage;
 }
@@ -32,13 +35,13 @@ export class TranslationError extends ApiError {
   }
 }
 
-export async function translateMessages(key: string, target: string, indices: number[]): Promise<TranslationResult> {
+export async function translateMessages(key: string, target: string, indices: number[], mode = "manual"): Promise<TranslationResult> {
   const value = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ?? "";
   let response: Response;
   try { response = await fetch("/api/v1/lang/translate", {
     method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": value === "__CSRF__" ? "" : value },
-    body: new URLSearchParams({ conversation_key: key, target_language: target, message_indices: indices.join(",") }),
+    body: new URLSearchParams({ conversation_key: key, target_language: target, message_indices: indices.join(","), mode }),
   }); } catch { throw new TranslationError(0, "语言服务暂时连接不上，请检查网络后重试"); }
   if (response.redirected && response.url.includes("/login")) {
     window.location.assign("/login");
@@ -48,4 +51,22 @@ export async function translateMessages(key: string, target: string, indices: nu
   try { data = await response.json(); } catch { throw new TranslationError(response.status, "翻译结果暂时无法读取，请稍后再试"); }
   if (!response.ok) throw new TranslationError(response.status, data.error ?? "翻译没有完成，请稍后再试", data.result);
   return data;
+}
+
+export interface TranslationPreview { conversation_key: string; source_text: string; text: string }
+export async function translationPreviews(keys: string[]): Promise<TranslationPreview[]> {
+  const previews: TranslationPreview[] = [];
+  let batch: string[] = [];
+  const flush = async () => {
+    if (!batch.length) return;
+    const result = await postForm<{ previews: TranslationPreview[] }>("/api/v1/lang/translate", { mode: "preview", conversation_keys: JSON.stringify(batch) });
+    previews.push(...result.previews);
+    batch = [];
+  };
+  for (const key of keys) {
+    if (batch.length >= 40 || new URLSearchParams({ mode: "preview", conversation_keys: JSON.stringify([...batch, key]) }).toString().length > 7000) await flush();
+    batch.push(key);
+  }
+  await flush();
+  return previews;
 }

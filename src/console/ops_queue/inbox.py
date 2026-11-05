@@ -9,6 +9,7 @@ from pathlib import Path
 
 from console.inbox.model import aggregate_messages, make_key, waiting_state
 from console.overview.safety import database
+from console.names import NamesResolver
 
 
 def alibaba(path, now):
@@ -18,10 +19,11 @@ def alibaba(path, now):
             for key, c in conversations.items()}
 
 
-def wechat(path, now):
+def wechat(path, now, *, names_resolver=None):
     from console.channels.wechat_private import ARCHIVE_PATH, CONTACT_PATH, conversations
     from console.inbox.store import WECHAT_PATH
     with database(path, 1) as db:
+        labels = (names_resolver or NamesResolver(path)).snapshot(state_db=db)
         columns = lambda table: {r[1] for r in db.execute('PRAGMA table_info(' + table + ')')}
         msg, scope = columns('messages'), columns('message_scopes')
         if 'payload' not in msg or not {'message_id', 'scope_id', 'business_role'} <= scope:
@@ -47,18 +49,21 @@ def wechat(path, now):
                 text = p.get('text') or ('[附件待核对]' if p.get('attachments') else '')
                 if not isinstance(text, str) or not text:
                     continue
-                groups[group].append(dict(role='seller' if sender == own else 'buyer', text=text, sent_at=at))
+                groups[group].append(dict(role='seller' if sender == own else 'buyer', text=text, sent_at=at,
+                                          sender_label=labels.member_name(group, sender)))
                 counts[group].update(roles[(account, str(mid))])
             except (ValueError, TypeError, AttributeError):
                 continue
         live = Path(path) == WECHAT_PATH
         private = conversations(db, archive_path=ARCHIVE_PATH if live else Path(path).parent / 'disabled-archive.sqlite3',
-                                contact_path=CONTACT_PATH if live else Path(path).parent / 'disabled-contacts.sqlite3')
+                                contact_path=CONTACT_PATH if live else Path(path).parent / 'disabled-contacts.sqlite3', names=labels)
     result = {k: dict(c, **waiting_state(c['messages'], now)[0]) for k, c in private.items()}
     for group, messages in groups.items():
         messages.sort(key=lambda m: m['sent_at'])
         role = min(counts[group], key=lambda r: (-counts[group][r], r)) if counts[group] else 'unclassified'
         key = make_key('conversation', 'wechat', '微信', group)
-        result[key] = dict(key=key, channel='wechat', buyer_name='微信群 · ' + group[-4:], messages=messages,
+        resolved = labels.group(group)
+        result[key] = dict(key=key, channel='wechat', buyer_name=resolved.value, messages=messages,
+                           is_group=True, country='', name_missing=not resolved.named, name_missing_reason=resolved.reason,
                            counterpart_role=role, **waiting_state(messages, now)[0])
     return result

@@ -43,7 +43,8 @@ class WhatsAppRehearsalTests(unittest.TestCase):
             mounted = stack.enter_context(patch.object(api, 'build', side_effect=isolated_build))
             routes = rehearsal.build_routes(tmp)
             mounted.assert_called_once()
-            self.assertEqual({r.path for r in routes}, {
+            # The rehearsal also mounts unrelated parties tools and its marker.
+            self.assertEqual({r.path for r in routes if r.path.startswith('/api/v1/system/whatsapp/')}, {
                 '/api/v1/system/whatsapp/' + action for action in ('status', 'qr', 'start', 'logout')})
 
             for action in ('start', 'logout'):

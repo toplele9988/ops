@@ -80,7 +80,7 @@ def test_settings_and_glossary_changes_persist_and_invalidate_translation_cache(
     runner = BlockRunner()
     lang = service(inputs, runner)
     write(lang, 'settings', my_language='de', auto_native_send='0')
-    assert service(inputs).read('settings', {})['settings'] == {'my_language': 'de', 'auto_native_send': False}
+    assert service(inputs).read('settings', {})['settings'] == {'my_language': 'de', 'auto_native_send': False, 'auto_translate_incoming': True}
     key = inputs.inbox.conversation(['gobo wheel fixture for the stage'])
     payload = dict(conversation_key=key, target_language='zh-CN', message_indices='0')
     write(lang, 'translate', **payload)
@@ -96,16 +96,17 @@ def test_settings_and_glossary_changes_persist_and_invalidate_translation_cache(
     assert not any(item['term'] == 'gobo wheel' for item in lang.read('glossary', {})['items'])
 
 
-def test_country_is_only_a_hint_and_unknown_language_blocks_compose(inputs):
-    runner = Mock(side_effect=RuntimeError('虚构模型不可用'))
+def test_country_is_only_a_hint_and_unknown_language_gets_english(inputs):
+    runner = BlockRunner()
     key = inputs.inbox.conversation(['👍'], country='Brazil')
     lang = service(inputs, runner)
     contact = lang.read('contact', {'conversation_key': key})['contact']
-    assert contact['native_language'] is None
-    assert contact['country_hint']
-    with pytest.raises(BadRequest, match='语言'):
-        write(lang, 'compose', conversation_key=key, text='Please send fictional information')
-    runner.assert_not_called()
+    assert contact['native_language'] is None and contact['country_hint']
+    result = write(lang, 'compose', conversation_key=key, text='请提供虚构灯具资料')
+    assert result['native_language'] is None
+    assert [v['language'] for v in result['versions']] == ['en']
+    assert result['text'] == result['english_text'] and result['local_text'] is None
+    assert runner.calls
 
 
 def test_manual_lock_wins_over_detection_and_can_be_unlocked(inputs):
@@ -330,7 +331,8 @@ def test_compose_returns_native_and_back_translation_without_changing_inbox(inpu
     assert result['native_language'] == 'es' and result['my_language'] == 'zh-CN'
     assert result['text'] and result['back_translation']
     assert result['validation']['ok'] is True
-    assert validate(original, result['text'], [])['ok'] is True
+    assert all(validate(original, version['text'], [])['ok'] for version in result['versions'])
+    assert result['text'] == result['english_text'] + '\n\n' + result['local_text']
     assert len(inputs.inbox.conversations[key]['messages']) == 1
 
 

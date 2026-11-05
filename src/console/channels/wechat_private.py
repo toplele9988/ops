@@ -89,7 +89,7 @@ def private_rows(db):
         ORDER BY m.created_at,m.rowid''').fetchall()
 
 
-def conversations(db, *, archive_path=ARCHIVE_PATH, contact_path=CONTACT_PATH, blocks=None):
+def conversations(db, *, archive_path=ARCHIVE_PATH, contact_path=CONTACT_PATH, blocks=None, names=None):
     from console.channels.common import conversation
     grouped, labels = {}, {}
     for row in private_rows(db):
@@ -111,12 +111,19 @@ def conversations(db, *, archive_path=ARCHIVE_PATH, contact_path=CONTACT_PATH, b
         grouped.setdefault(ident, []).append(message)
         labels[ident] = row['display_name']
     result = {}
+    if grouped and names is None:
+        from console.names import NamesResolver
+        state_path = db.execute('PRAGMA database_list').fetchone()[2]
+        names = NamesResolver(state_path, contacts_path=contact_path).snapshot(state_db=db)
     for (app, own, peer), messages in grouped.items():
         role, name, basis = contact_role(app, own, peer, archive_path=archive_path,
                                        contact_path=contact_path, fallback=labels[app, own, peer])
-        conv = conversation('wechat', '微信', account_key(app, own), peer, name, messages,
+        resolved = names.contact(peer, app=app, own=own, provided_name=name)
+        country = names.country(peer, app=app, own=own)
+        conv = conversation('wechat', '微信', account_key(app, own), peer, resolved.value, messages,
                             broad_role(role), is_group=False)
-        conv.update(business_role=role, role_basis=basis, needs_classification=role == 'unknown')
+        conv.update(business_role=role, role_basis=basis, needs_classification=role == 'unknown',
+                    country=country[0] if country else '', name_missing=not resolved.named, name_missing_reason=resolved.reason)
         result[conv['key']] = conv
     return result
 

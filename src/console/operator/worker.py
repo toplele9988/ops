@@ -7,9 +7,35 @@ from .store import dumps
 LOG = logging.getLogger(__name__)
 
 
+class Background:
+    """Run a slow poll (network or model calls) off the 45-second loop.
+
+    One thread at a time; a failure surfaces on the next loop so health records it.
+    """
+    def __init__(self, poll):
+        self.call, self.thread, self.error, self.result = poll, None, None, None
+
+    def _target(self):
+        try:
+            self.result = self.call()
+        except Exception as error:
+            self.error = error
+
+    def poll(self):
+        if self.thread is not None and self.thread.is_alive():
+            return dict(running=True)
+        if self.error is not None:
+            error, self.error = self.error, None
+            raise error
+        last, self.result = self.result, None
+        self.thread = threading.Thread(target=self._target, daemon=True, name='operator-background')
+        self.thread.start()
+        return dict(started=True, last=last)
+
+
 class Worker:
     def __init__(self, operator, events, sources, *, gaps=None, archive_events=None, triage=None, incremental=None,
-                 interval=45, batch=100,
+                 extras=(), interval=45, batch=100,
                  seed_at_tail=False):
         if not 30 <= interval <= 60:
             raise ValueError('operator_interval_invalid')
@@ -18,6 +44,8 @@ class Worker:
         self.archive_events = archive_events
         self.triage = triage
         self.incremental = incremental
+        # (health component name, object with poll()) pairs, e.g. names refresh, pretranslation.
+        self.extras = tuple(extras)
         # Production starts at the current newest row: history is covered by dossiers,
         # and replaying years of messages would spend one model call per old message.
         self.seed_at_tail = seed_at_tail
@@ -103,6 +131,8 @@ class Worker:
                 result['triage'] = self._run('triage', self.triage.poll)
             if self.incremental:
                 result['dossier_incremental'] = self._run('dossier_incremental', self.incremental.poll)
+            for name, job in self.extras:
+                result[name] = self._run(name, job.poll)
             if include_tick:
                 result['tick'] = self._run('tick', self.operator.tick)
             return result

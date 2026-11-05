@@ -52,7 +52,7 @@ function fixture(url, method) {
     "/alibaba-open/status": { configured: false, authorized: false, token_expires_in: null, last_poll_at: null, last_poll_result: null, next_step: "演示未授权", paused: true, daily_limit: 10, calls_today: 0, next_poll_at: null },
     "/alibaba-open/candidates": page(),
     "/kb/stats": { ready: true, chunks: 1, families: [], loaded_at: seconds, mode: "lexical" }, "/kb/brief": { text: "虚构公司背景", version: 1, versions: [] }, "/kb/search": { items: [], mode: "lexical", ready: true },
-    "/directory/wechat/summary": { ready: true, conclusion: "虚构名录检查", total: 0, conflicts: 0, not_enrolled_suspected: { supplier: 0, customer: 0 }, notes: [], groups: { total: 0, by_state: {} } }, "/directory/wechat": page(),
+    "/directory/wechat/summary": { ready: true, conclusion: "虚构名录检查", total: 0, conflicts: 0, not_enrolled_suspected: { supplier: 0, customer: 0 }, notes: [], groups: { total: 0, by_state: {} }, name_health: { total: 6, named: 4, missing: 2, reasons: { "接口没返回群名": 2 } } }, "/directory/wechat": page(),
     "/extract/summary": { pending: { offer: 0, freight: 0 }, total: 0, last_scan_at: null }, "/extract/suggestions": page(),
     "/classify": { ...page(), day: "2026-11-02" }, "/classify/summary": { total: 0, pending: 0, confirmed: 0, ignored: 0, unknown_first_seen: 0 },
     "/lang/settings": { settings: { my_language: "zh-CN", auto_native_send: false }, languages: [{ code: "zh-CN", label: "中文" }, { code: "en", label: "英语" }], quota: { hourly_limit: 10, used: 0, remaining: 10 } },

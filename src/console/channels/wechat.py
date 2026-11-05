@@ -5,6 +5,7 @@ from pathlib import Path
 
 from console.inbox.store import WECHAT_PATH, read_database
 from console.media import tokens
+from console.names import NamesResolver
 
 from . import rich
 from . import wechat_private
@@ -43,7 +44,7 @@ class WechatAdapter(CachedAdapter):
     name, label = 'wechat', '微信'
 
     def __init__(self, path=WECHAT_PATH, include_roles=('customer', 'supplier', 'unclassified'), key_path=tokens.KEY_PATH,
-                 *, media_tokens=True, archive_path=None, contact_path=None):
+                 *, media_tokens=True, archive_path=None, contact_path=None, names_resolver=None, database=read_database):
         super().__init__()
         self.path, self.include_roles = Path(path), frozenset(include_roles)
         self.key_path = key_path
@@ -52,20 +53,19 @@ class WechatAdapter(CachedAdapter):
         live = self.path == WECHAT_PATH
         self.archive_path = Path(archive_path) if archive_path is not None else (wechat_private.ARCHIVE_PATH if live else self.path.parent / 'disabled-archive.sqlite3')
         self.contact_path = Path(contact_path) if contact_path is not None else (wechat_private.CONTACT_PATH if live else self.path.parent / 'disabled-contacts.sqlite3')
+        self.names = names_resolver or NamesResolver(self.path, contacts_path=self.contact_path)
+        self.database = database
         if not self.include_roles <= ROLES:
             raise ValueError('群角色无效')
         self._all_raw = {}
 
     def _load(self):
-        with read_database(self.path) as db:
+        with self.database(self.path) as db:
             tables = schema(db)
             if ('payload' not in tables.get('messages', set()) or
                     not {'message_id', 'scope_id', 'business_role'} <= tables.get('message_scopes', set())):
                 raise ValueError('微信数据结构不完整')
-            group_names = names(db, tables, ('group_id', 'room_id', 'chatroom_id'),
-                                ('group_name', 'room_name', 'chatroom_name'), 'onboarding_candidates')
-            member_names = names(db, tables, ('sender_id', 'wxid', 'member_id', 'user_id', 'contact_id'),
-                                 ('nickname', 'nick_name', 'display_name', 'member_name', 'contact_name'))
+            labels = self.names.snapshot(state_db=db)
             scoped_app = 'app_id' in tables['messages'] and 'app_id' in tables['message_scopes']
             scopes = defaultdict(Counter)
             app_column = 'app_id' if scoped_app else "''"
@@ -97,28 +97,29 @@ class WechatAdapter(CachedAdapter):
                         continue
                     seen.add(identity)
                     message = dict(role='seller' if sender == own else 'buyer', text=text,
-                        sent_at=sent_at, sender_label=member_names.get(sender, '成员 ' + sender[-4:]))
+                        sent_at=sent_at, sender_label=labels.member_name(group, sender))
                     if blocks:
                         message['blocks'] = blocks
                     grouped[group].append(message)
                     roles[group].update(scopes[(app, str(mid))])
                 except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError):
                     continue
-            private = wechat_private.conversations(db, archive_path=self.archive_path, contact_path=self.contact_path,
+            private = wechat_private.conversations(db, archive_path=self.archive_path, contact_path=self.contact_path, names=labels,
                 blocks=lambda p, a, m: rich.blocks_for(p, lambda ordinal:
                     tokens.make(['wx', a, m, ordinal], self.key_path) if self.media_tokens else None))
         result = dict(private)
         for group, messages in grouped.items():
             role = min(roles[group], key=lambda r: (-roles[group][r], r)) if roles[group] else 'unclassified'
-            conv = conversation(self.name, self.label, '微信', group,
-                                group_names.get(group, '微信群 ·' + group[-4:]), messages, role, is_group=True)
+            resolved = labels.group(group)
+            conv = conversation(self.name, self.label, '微信', group, resolved.value, messages, role, is_group=True)
+            conv.update(name_missing=not resolved.named, name_missing_reason=resolved.reason)
             result[conv['key']] = conv
         return result
 
     def _read(self, now):
         try:
             source = file_stamp(self.path)
-            stamp = (source, file_stamp(self.archive_path), file_stamp(self.contact_path)) if source else None
+            stamp = (source, file_stamp(self.archive_path), file_stamp(self.contact_path), self.names.fingerprint()) if source else None
             if stamp != self._stamp:
                 self._all_raw = self._load() if stamp is not None else {}
                 self._raw = {k: c for k, c in self._all_raw.items() if c['counterpart_role'] in self.include_roles}

@@ -58,3 +58,26 @@ def test_last_summary(tmp_path):
     assert last_summary(tmp_path / 'missing') is None
     (tmp_path / '2030-01-02.json').write_text('{"new_offers": 3}')
     assert last_summary(tmp_path) == dict(day='2030-01-02', new_offers=3)
+
+
+def test_background_job_runs_off_loop_and_reports_failure(system):
+    import threading
+    from console.operator.worker import Background
+    gate, calls = threading.Event(), []
+    def slow():
+        calls.append(1)
+        gate.wait(5)
+        if len(calls) == 2:
+            raise TimeoutError('fictional')
+        return dict(done=True)
+    job = Background(slow)
+    worker = Worker(system.op, None, [], extras=[('names', job)])
+    assert worker.run_once(include_tick=False)['names'] == dict(started=True, last=None)
+    assert worker.run_once(include_tick=False)['names'] == dict(running=True)
+    gate.set(); job.thread.join(5)
+    assert worker.run_once(include_tick=False)['names'] == dict(started=True, last=dict(done=True))
+    job.thread.join(5)
+    assert worker.run_once(include_tick=False)['names'] is None
+    with system.op.store.read() as db:
+        row = db.execute("SELECT * FROM operator_health WHERE component='names'").fetchone()
+    assert row['ok'] == 0 and row['error_type'] == 'TimeoutError'

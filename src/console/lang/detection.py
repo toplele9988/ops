@@ -19,6 +19,22 @@ LANGUAGES = (
     ('kk', '哈萨克语'), ('mn', '蒙古语'), ('ka', '格鲁吉亚语'), ('hy', '亚美尼亚语'),
 )
 CODES = frozenset(code for code, _ in LANGUAGES)
+
+
+def needs_chinese_translation(message):
+    """Skip our own words, empty/media-only text, and Chinese prose without a model call."""
+    if message.get('role') != 'buyer':
+        return False
+    text = message.get('text', '').strip()
+    clean = re.sub(r'https?://\S+|\b[A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*\b', '', text)
+    letters = re.findall(r'[^\W\d_]', clean, re.U)
+    if not letters:
+        return False
+    # Kana and Hangul distinguish Japanese/Korean from Chinese, even in mixed text.
+    if re.search(r'[\u3040-\u30ff\uac00-\ud7af]', clean):
+        return True
+    chinese = len(re.findall(r'[\u3400-\u9fff\U00020000-\U0002fa1f]', clean))
+    return not chinese or chinese / len(letters) < .4
 WORDS = {
     'es': 'hola gracias necesito necesitamos quiero queremos precio precios cuánto cuanto puede puede enviar envío envio para por favor estos estas luces gustaría gustaria',
     'pt': 'olá ola obrigado obrigada preciso precisamos gostaria você voce vocês voces não nao preço preco preços precos são sao para por favor essas estas luzes envio',

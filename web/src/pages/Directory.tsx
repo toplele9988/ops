@@ -11,7 +11,7 @@ interface Item {
   id: string; kind: "group" | "private" | "official"; name: string; collect_state: string; collect_state_reason: string; role: string | null; named_role_label: string | null;
   role_conflict: boolean; role_conflict_reason: string | null; n_messages: number | null; last_message_at: number | null; inbox_visible: boolean; inbox_visibility_reason: string | null; registered: boolean;
 }
-interface Summary { ready: boolean; conclusion: string; total: number; conflicts: number; not_enrolled_suspected: { supplier: number; customer: number }; notes: string[]; groups: { total: number; by_state: Record<string, number> } }
+interface Summary { ready: boolean; conclusion: string; total: number; conflicts: number; not_enrolled_suspected: { supplier: number; customer: number }; notes: string[]; groups: { total: number; by_state: Record<string, number> }; name_health?: { total: number; missing: number; reasons: Record<string, number> } }
 interface Page { items: Item[]; total: number; page: number; page_size: number }
 
 const STATE: Record<string, { text: string; tone: "green" | "orange" | "red" | "plain" }> = {
@@ -46,6 +46,7 @@ export function DirectoryPage() {
       {sum.isLoading && <Skeleton lines={2} />}
       {s && <div className="callout" role="note"><b>{s.conclusion}</b>{(s.not_enrolled_suspected.supplier + s.not_enrolled_suspected.customer) > 0 && <> 其中疑似供应商群 {s.not_enrolled_suspected.supplier} 个、客户群 {s.not_enrolled_suspected.customer} 个还没接入。</>}{s.conflicts > 0 && <> 有 {s.conflicts} 个群的角色和群名对不上，请核对。</>}</div>}
       {s?.notes.map((n) => <p className="t-foot" key={n}>{n}</p>)}
+      {s?.name_health && <p className="t-foot" data-testid="missing-names">有消息的微信会话共 {s.name_health.total} 个，还有 {s.name_health.missing} 个没名字。{Object.entries(s.name_health.reasons).map(([reason, count]) => `${reason}：${count} 个。`).join(" ")}</p>}
       <div className="toolbar" style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "16px 0 12px", alignItems: "center" }}>
         <Segmented value={kind} onChange={(v) => { setKind(v); setPage(1); }} options={KIND} label="类型" />
         <Segmented value={state} onChange={(v) => { setState(v); setPage(1); }} options={STATES} label="接入状态" />

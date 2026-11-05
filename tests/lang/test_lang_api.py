@@ -179,3 +179,49 @@ def test_host_csrf_blocks_write_without_calling_language_service(client):
         client.service.write.assert_not_called()
         response = http.post('/api/v1/lang/settings', data={'csrf': 'fictional-csrf', 'my_language': 'zh-CN'})
         assert response.status_code == 200
+
+
+def workflow_call(inputs, service, fields):
+    gate = SimpleNamespace(error_response=lambda req, code: JSONResponse({'error': '请先完成身份认证'}, status_code=code))
+    routes = api.build(gate, lang_path=inputs.path, service=service)
+    route = next(r for r in routes if r.path.endswith('/' + ('compose' if 'text' in fields else 'translate')))
+    return asyncio.run(route.endpoint(request(fields=fields)))
+
+
+def test_automatic_translation_quota_is_http_200_status_with_partial_results(inputs):
+    from test_lang_service import BlockRunner, service
+    key = inputs.inbox.conversation(['Fictional incoming line ' + chr(97 + i) for i in range(9)])
+    runner = BlockRunner()
+    lang = service(inputs, runner, hourly_limit=1)
+    result = workflow_call(inputs, lang, dict(conversation_key=key, mode='auto'))
+    payload = json.loads(result.body)
+    assert result.status_code == 200 and payload['quota_exhausted']
+    assert payload['hint'] == '本小时翻译额度已用完，60 分钟后继续'
+    assert sum(item['complete'] for item in payload['items']) == 8
+    assert 'error' not in payload
+    assert result.headers['cache-control'] == 'no-store'
+
+
+def test_existing_translate_route_serves_cached_previews_without_model_calls(inputs):
+    from test_lang_service import BlockRunner, service, write
+    runner = BlockRunner()
+    key = inputs.inbox.conversation(['Fictional incoming request'])
+    lang = service(inputs, runner)
+    write(lang, 'translate', conversation_key=key, mode='auto')
+    calls = len(runner.calls)
+    result = workflow_call(inputs, lang, dict(mode='preview', conversation_keys=json.dumps([key])))
+    assert result.status_code == 200
+    assert json.loads(result.body)['previews'][0]['conversation_key'] == key
+    assert len(runner.calls) == calls
+
+
+def test_compose_http_allows_unknown_language_and_checks_english(inputs):
+    from test_lang_service import service
+    from test_translate_workflow import JsonRunner
+    key = inputs.inbox.conversation(['👍'])
+    result = workflow_call(inputs, service(inputs, JsonRunner()), dict(conversation_key=key, text='请确认虚构资料 FX-730'))
+    payload = json.loads(result.body)
+    assert result.status_code == 200
+    assert payload['native_language'] is None
+    assert [v['language'] for v in payload['versions']] == ['en']
+    assert payload['validation']['ok'] and payload['back_validation']['ok']

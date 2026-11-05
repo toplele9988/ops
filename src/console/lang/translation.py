@@ -5,6 +5,7 @@ import re
 from collections import Counter
 
 from console.inbox.ai import _answer_text
+from console.ai_gateway import unfence
 from . import prompts
 from .protection import _matches, protect, restore, validate
 
@@ -37,6 +38,18 @@ def parse_blocks(output, expected):
     if not isinstance(output, str) or len(output) > 1024 * 1024:
         return {}
     answer = _answer_text(output)
+    try:
+        value = json.loads(unfence(answer))
+        blocks = value['blocks']
+        if not isinstance(blocks, list):
+            return {}
+        counts = Counter(item.get('index') for item in blocks if isinstance(item, dict) and type(item.get('index')) is int)
+        return {item['index']: item['text'].strip() for item in blocks if isinstance(item, dict)
+                and type(item.get('index')) is int and item['index'] in expected and counts[item['index']] == 1
+                and isinstance(item.get('text'), str) and 0 < len(item['text'].strip()) <= 20000
+                and not re.search(r'\[\[/?\d+\]\]', item['text'])}
+    except (ValueError, KeyError, TypeError):
+        pass  # Accept the previous numbered runner format as well.
     # Slice at every start marker first. A malformed outer block may not swallow
     # a correctly closed neighbouring block, even if its own close comes later.
     starts = list(re.finditer(r'^\[\[(\d+)\]\][ \t]*\n', answer, re.M))
@@ -59,7 +72,7 @@ def glossary_fingerprint(glossary):
     return digest(json.dumps([(item['term'], item['mode'], item['translation']) for item in glossary], ensure_ascii=False))
 
 
-def translate_blocks(service, entries, target, glossary, *, strict=True):
+def translate_blocks(service, entries, target, glossary, *, strict=True, cache_only=False):
     """Mutate each entry independently and persist validated successes immediately."""
     fingerprint = glossary_fingerprint(glossary)
     pending, aliases = [], {}
@@ -76,6 +89,9 @@ def translate_blocks(service, entries, target, glossary, *, strict=True):
                     pending.append(entry)
                     aliases[key] = []
                 aliases[key].append(entry)
+
+    if cache_only:
+        return
 
     def publish(entry):
         for alias in aliases[digest(entry['source'])]:

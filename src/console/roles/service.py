@@ -40,13 +40,14 @@ class TransactionStore:
 
 class Roles:
     def __init__(self, path=ARCHIVE_PATH, *, store=None, inbox=None, runner=ai.DEFAULT_RUNNER,
-                 hub=None, clock=None, config=None, today=None, followups_path=None, dossiers_path=None):
+                 hub=None, clock=None, config=None, today=None, followups_path=None, dossiers_path=None, profiles_path=None):
         self.store = Store(store.path, connection=store.connection, target_version=4) if store else Store(path, target_version=4)
         self.clock = clock or time.time
         self.config = config or Config()
         self.today = today
         self.followups_path = followups_path
         self.dossiers_path = dossiers_path
+        self.profiles_path = profiles_path
         self.inbox = inbox if inbox is not None else shared_inbox()
         self.runner = inbox_ai.official_runner if runner is ai.DEFAULT_RUNNER else runner
         if hub is None:
@@ -72,7 +73,7 @@ class Roles:
         return '未返回模型标识'
 
     def _run(self, role, kind, key, data, output, evidence, render, who, now, *,
-             ai_data=None, parse=None, skip_reason=None, effect=None, refresh_effect=False, apply=True):
+             ai_data=None, parse=None, skip_reason=None, effect=None, refresh_effect=False, apply=True, profile_source=False):
         # Invalidate suggestions generated before dossier evidence was available.
         fp = fingerprint(dict(version=4 if role == 'triage' else 2, role=role, data=data))
         previous = reused(self.store, role, key, fp)
@@ -80,9 +81,9 @@ class Roles:
             if effect and refresh_effect and apply:
                 with self.store.write() as db:
                     effect(db, previous)
-            return dict(previous, reused=True, **({'dry_run': True} if not apply else {}))
+            return dict(triage.profile_run(previous), reused=True, **({'dry_run': True} if not apply else {}))
         error = skip_reason
-        source, status, model, success, limited = 'rules', 'fallback' if error else 'ok', None, None, None
+        source, status, model, success, limited = 'ai' if profile_source else 'rules', 'fallback' if error else 'ok', None, None, None
         if apply and ai_data is not None and self.runner is not None and not skip_reason:
             try:
                 reserve(self.store, now, self.config)
@@ -103,14 +104,15 @@ class Roles:
         text = render(output)
         if not apply:
             return dict(id=None, role=role, subject_kind=kind, subject_key=str(key), input_fingerprint=fp,
-                        status='ok', source='rules', model=None, ai_success=None, output_json=output,
+                        status='ok', source='ai_profile' if profile_source else 'rules', model=None, ai_success=None, output_json=output,
                         output_text=text, evidence_json=evidence, error=None, created_at=stamp(now),
                         created_by=who, dry_run=True, reused=False)
         with self.store.write() as db:
-            result = save_run(db, role, kind, key, fp, output, text, evidence, who, now,
+            result = save_run(db, role, kind, key, fp, dict(output, profile_source='ai_profile') if profile_source else output, text, evidence, who, now,
                               source=source, status=status, model=model, error=error, success=success)
             if effect:
                 effect(db, result)
+        result = triage.profile_run(result)
         result['reused'] = False
         if limited and role != 'brief':
             limited.result = result
@@ -160,13 +162,23 @@ class Roles:
             if status and status != 'all':
                 query += ' WHERE status=?'
                 args = (status,)
-            return [suggestion_view(r) for r in db.execute(query + ' ORDER BY updated_at DESC,id DESC', args)]
+            items = [suggestion_view(r) for r in db.execute(query + ' ORDER BY updated_at DESC,id DESC', args)]
+            for item in items:
+                if item['conversation'].pop('profile_source', None) == 'ai_profile':
+                    item['source'] = 'ai_profile'
+            return items
 
     @serialized
     def scan_triage(self, who, *, apply=True, use_ai=True):
         now = self.clock()
         inputs = self.inputs(now)
         inputs.dossier_links = dossier_links.index(dossier_links.load(self.dossiers_path, archive_path=self.store.path))
+        from console.profiles.store import DB_PATH, Profiles
+        try:
+            path = self.profiles_path if self.profiles_path is not None else (DB_PATH if self.store.path == Path(ARCHIVE_PATH) else self.store.path.parent / 'profiles.sqlite3')
+            inputs.profiles = {p['conversation_key']: p for p in Profiles(path).all() if triage.usable_profile(p)}
+        except Exception:
+            inputs.profiles = {}
         existing = {s['conversation_key']: s for s in self._suggestion_rows()}
         linked = {c['conversation_key'] for c in inputs.rows['deal_conversations']}
         # Existing customer identities still use the original deal-suggestion rules.
@@ -174,7 +186,7 @@ class Roles:
                       if i['conversation_key'] in inputs.dossier_links)
         eligible = [c for c in inputs.conversations.values() if c['key'] not in linked
                     and existing.get(c['key'], {}).get('status', 'pending') == 'pending'
-                    and triage.eligible(c, now, c['key'] in inputs.dossier_links)]
+                    and triage.eligible(c, now, c['key'] in inputs.dossier_links, c['key'] in inputs.profiles)]
         eligible.sort(key=lambda c: (-c['last_seen'], c['key']))
         runs, suggestions, attempted, limited = [], [], False, None
         choices = triage.candidates(inputs)
@@ -185,7 +197,7 @@ class Roles:
             except Exception:
                 detailed = None
             conv = detailed or conv
-            if not triage.eligible(conv, now, conv['key'] in inputs.dossier_links):
+            if not triage.eligible(conv, now, conv['key'] in inputs.dossier_links, conv['key'] in inputs.profiles):
                 continue
             prepared.append((conv, triage.rules(conv, inputs)))
         prepared.sort(key=lambda pair: (-(seconds(pair[0].get('last_seen')) or 0), pair[0]['key']))
@@ -194,6 +206,7 @@ class Roles:
             facts = conversation_data(conv, 12)
             latest = triage.latest_message(conv) if conv['key'] in inputs.dossier_links else last_known(conv)
             certain = rule.pop('certain')
+            profile_source = rule.pop('source', None) == 'ai_profile'
             if rule['suggested_deal_id'] is not None and not rule.get('duplicate_of'):
                 title = safe(inputs.deals[rule['suggested_deal_id']]['title'], 150)
                 rule['reason'] = '建议关联“' + title + '”；' + rule['reason']
@@ -212,23 +225,26 @@ class Roles:
                 evidence.append(dict(kind='conversation', id=rule['duplicate_of']))
             links = inputs.dossier_links.get(conv['key'], [])
             evidence += [dict(kind='dossier_source', id=link['source_id'], supplier_id=link['supplier_id']) for link in links]
-            data = dict(conversation=facts, candidates=choices, rule=rule, dossier_links=links, use_ai=use_ai)
+            data = dict(conversation=facts, candidates=choices, rule=rule, dossier_links=links, use_ai=use_ai, profile=inputs.profiles.get(conv['key']))
             ai_data = dict(conversation=dict(channel=facts['channel'], title=facts['buyer_name'],
                 messages=[dict(role=m['role'], text=m['text']) for m in facts['messages']]), candidates=choices)
             def save(db, run, conv=conv):
-                save_suggestion(db, run, summary(conv), who, now)
+                profile = run['output_json'].get('profile_source') == 'ai_profile'
+                clean = triage.profile_run(run)
+                snapshot = dict(summary(conv), **({'profile_source': 'ai_profile'} if profile else {}))
+                save_suggestion(db, dict(clean, source='ai') if profile else clean, snapshot, who, now)
             try:
                 run = self._run('triage', 'conversation', conv['key'], data, rule, evidence, triage.render, who, now,
-                                ai_data=None if certain or not use_ai else ai_data,
+                                ai_data=None if certain or not use_ai or profile_source else ai_data,
                                 parse=lambda parsed, rule=rule: triage.preserve_conflict(ai.triage(parsed, rule, choices), rule), effect=save,
-                                skip_reason='本次扫描的 AI 尝试额度已用完，请按规则建议人工核对' if use_ai and attempted and not certain else None,
-                                apply=apply)
+                                skip_reason='本次扫描的 AI 尝试额度已用完，请按规则建议人工核对' if use_ai and attempted and not certain and not profile_source else None,
+                                apply=apply, profile_source=profile_source)
             except RateLimited as exc:
                 run, limited = exc.result, exc
-            attempted |= use_ai and not run.get('reused', False) and not certain and self.runner is not None
+            attempted |= use_ai and not profile_source and not run.get('reused', False) and not certain and self.runner is not None
             runs.append(run)
             if not apply:
-                suggestions.append(dict(run['output_json'], conversation=summary(conv), conversation_key=conv['key']))
+                suggestions.append(dict(run['output_json'], source=run['source'], conversation=summary(conv), conversation_key=conv['key']))
         if apply:
             keys = {r['subject_key'] for r in runs}
             suggestions = [s for s in self._suggestion_rows('pending') if s['conversation_key'] in keys]
@@ -406,7 +422,7 @@ class Roles:
     def read(self, resource, params=None, row_id=None):
         params = params or {}
         if resource == 'runs':
-            return dict(items=recent(self.store, params.get('role'), params.get('limit', 50)))
+            return dict(items=[triage.profile_run(r) for r in recent(self.store, params.get('role'), params.get('limit', 50))])
         if resource == 'triage':
             items = self._suggestion_rows(params.get('status', 'pending'))
             try:
@@ -441,7 +457,7 @@ class Roles:
         items = []
         for key, (name, duty, level) in ROLE_INFO.items():
             last = recent(self.store, key, 1)
-            latest = last[0] if last else {}
+            latest = triage.profile_run(last[0]) if last else {}
             items.append(dict(key=key, name=name, responsibility=duty, level=level,
                 last_run_at=latest.get('created_at'), last_status=latest.get('status'), last_source=latest.get('source'),
                 runs_24h=counts.get(key, {}).get('runs', 0), failures_24h=counts.get(key, {}).get('failures', 0),

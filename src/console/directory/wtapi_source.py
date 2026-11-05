@@ -2,8 +2,8 @@
 
 The builder reads credentials only when explicitly called. Importing this
 module never imports WTAPI, reads production configuration, or makes requests.
-The returned object's entire public surface is the two metadata reads below;
-it does not retain the full client as an accessible attribute.
+Each returned object exposes only its listed metadata reads; neither builder
+exposes a full client as an accessible attribute.
 """
 import importlib
 import json
@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import stat
+import time
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .errors import RefreshFailed
 from .sources import CONFIG_PATH
@@ -117,6 +119,7 @@ def build_readonly_refresh_client(config_path=CONFIG_PATH):
     workers, and no inline-token fallback absent from those existing callers.
     """
     app_id, token = _credentials(config_path)
+
     try:
         client_type = importlib.import_module('wtapi_client').WTAPIClient
     except Exception:
@@ -131,3 +134,55 @@ def build_readonly_refresh_client(config_path=CONFIG_PATH):
     if wrapper is None:
         raise RefreshFailed(_CLIENT_ERROR, 503)
     return wrapper
+
+
+def build_readonly_members_client(config_path=CONFIG_PATH):
+    """One member-list metadata capability; no full WTAPI client is exposed.
+
+    The installed client has only get_member_name (which discards the list).
+    Use its documented MEMBERS_ENDPOINT and token-file convention, without
+    modifying /opt or accessing any send/discovery method. NamesRefresh applies
+    the same outer 25-second deadline as RefreshCache; transport timeout is 20.
+    """
+    app_id, token = _credentials(config_path)
+
+    # Reuse the installed transport's absolute deadline for connection, response
+    # headers and body. Capture functions only; never construct a full client.
+    try:
+        module = importlib.import_module('wtapi_client')
+        deadline_handler, read_bounded = module._DeadlineHTTPSHandler, module._read_before_deadline
+        valid = callable(deadline_handler) and callable(read_bounded)
+    except Exception:
+        valid = False
+    if not valid:
+        raise RefreshFailed(_MODULE_ERROR, 503)
+
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise RefreshFailed(_CALL_ERROR)
+
+    def fetch(group_id):
+        deadline = time.monotonic() + 20
+        url = _ORIGIN + '/finder/v2/api/group/getChatroomMemberList'
+        request = Request(url, data=json.dumps({'appId': app_id, 'chatroomId': group_id}).encode('utf8'),
+                          headers={'X-finder-TOKEN': token, 'Content-Type': 'application/json',
+                                   'Accept-Encoding': 'identity'}, method='POST')
+        opener = build_opener(ProxyHandler({}), NoRedirect(), deadline_handler(deadline))
+        with opener.open(request, timeout=20) as response:
+            if (response.getcode() != 200 or response.geturl() != url
+                    or response.headers.get('Content-Encoding', 'identity').lower() not in ('', 'identity')):
+                raise RefreshFailed(_CALL_ERROR)
+            raw = read_bounded(response, 1024 * 1024, deadline, 20)
+        if len(raw) > 1024 * 1024:
+            raise RefreshFailed(_CALL_ERROR)
+        return json.loads(raw.decode('utf8'))
+
+    class ReadonlyMembersClient:
+        __slots__ = ()
+
+        def get_chatroom_member_list(self, group_id):
+            if not isinstance(group_id, str) or not _GROUP_ID.fullmatch(group_id):
+                raise RefreshFailed('成员昵称请求须提供准确的群号')
+            return _call_once(fetch, group_id)
+
+    return ReadonlyMembersClient()

@@ -2,6 +2,7 @@
 import json
 
 import subprocess
+from console import ai_gateway
 
 from console.inspiration.enrich import FALLBACK_MODEL, GATEWAY, RunnerOutput, _json_values, _model
 
@@ -21,12 +22,16 @@ def official_runner(prompt):
     fraction of a cent per draft. It only produces text; nothing is ever sent to a customer.
     """
     for model in OFFICIAL_ATTEMPTS:
-        request = json.dumps({'action': 'run', 'provider': 'deepseek_official', 'model': model, 'task': prompt},
-                             ensure_ascii=False)
-        completed = subprocess.run([GATEWAY], input=request, text=True, capture_output=True, timeout=120)
+        completed = ai_gateway.run(['ai-task', 'run', 'deepseek_official', '--model', model],
+                                   input=prompt, text=True, capture_output=True, timeout=120, check=False)
         if completed.returncode:
             raise RuntimeError('模型任务执行失败')
-        envelope = next(_json_values(completed.stdout), None)
+        envelope = json.loads(completed.stdout)
+        if (not isinstance(envelope, dict) or envelope.get('provider') not in (None, 'deepseek_official', 'deepseek')
+                or envelope.get('route') not in (None, 'deepseek_official')
+                or envelope.get('status') not in (None, 'ok', 'completed', 'success')
+                or (_model(envelope) and _model(envelope) not in OFFICIAL_ATTEMPTS)):
+            raise RuntimeError('模型返回的来源无效')
         answer = envelope.get('answer') if isinstance(envelope, dict) else None
         if isinstance(answer, str) and answer.strip():
             actual = _model(envelope) or model

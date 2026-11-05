@@ -16,7 +16,7 @@ export async function installPartiesFixtures(page, problems = [], { empty = fals
   const state = {
     parties: empty ? [] : [base(1, '虚构灯塔采购', 'customer', '虚构国甲'), base(2, '虚构灯塔重复资料', 'customer', '虚构国乙'), base(3, '虚构星河工厂', 'supplier', '虚构国甲'), base(4, '虚构久未联系客户', 'customer', '虚构国甲')],
     conversations: empty ? conversations.map(c => ({ ...c, party_id: null })) : conversations,
-    requests, failedRequests: [], results: new Map(), merges: [], failNext: false,
+    requests, failedRequests: [], results: new Map(), merges: [], failNext: false, loseNextResponse: false,
   };
   if (!empty) {
     state.parties[0].deals = [{ id: 11, title: '虚构灯具询盘', status: 'open', stage: 'inquiry' }];
@@ -77,6 +77,17 @@ export async function installPartiesFixtures(page, problems = [], { empty = fals
       let p;
       let result;
       if (!tail) {
+        // Match the real UNIQUE(kind,name) and transactional identity ownership checks.
+        if (state.parties.some(p => p.kind === f.kind && p.name === f.name)) {
+          await route.fulfill({ status: 409, json: { error: '资料重复或关联已变化，请刷新核对' } }); return;
+        }
+        const conversation = f.conversation_key && state.conversations.find(c => c.key === f.conversation_key);
+        if (f.conversation_key && !conversation) {
+          await route.fulfill({ status: 404, json: { error: '未找到现有会话，请先去商机沟通检查' } }); return;
+        }
+        if (conversation?.party_id) {
+          await route.fulfill({ status: 409, json: { error: '该会话已属于其他往来单位，请确认后更换归属' } }); return;
+        }
         p = base(Math.max(0, ...state.parties.map(p => p.id)) + 1, f.name, f.kind, f.country);
         state.parties.push(p);
         if (f.conversation_key) state.conversations.find(c => c.key === f.conversation_key).party_id = p.id;
@@ -123,6 +134,10 @@ export async function installPartiesFixtures(page, problems = [], { empty = fals
       }
       addEvent(p, result.message);
       state.results.set(f.request_id, { fingerprint, result });
+      if (state.loseNextResponse) {
+        state.loseNextResponse = false;
+        await route.fulfill({ status: 503, json: { error: '虚构响应中断，保存可能已成功' } }); return;
+      }
       await route.fulfill({ json: result });
     } catch (e) { problems.push(String(e)); await route.fulfill({ status: 501, json: { error: String(e) } }); }
   });

@@ -24,7 +24,7 @@ try {
     p.on('dialog', d => d.accept());
     await p.clock.setFixedTime(new Date('2030-01-01T00:00:00Z'));
     const go = path => p.goto(server.base + '/app' + path);
-    await go('/');
+    await go('/workbench');
     await p.getByTestId('queue-count').waitFor();
     const before = await p.locator('.queue-item').count();
     await p.locator('[data-kind="buyer_reply"]').getByRole('link', { name: '去回复买家' }).click();
@@ -76,7 +76,7 @@ try {
     await go(`/inbox?conversation=${conversationKey}&state=all`);
     await p.locator('.bubble').first().waitFor(); await profile(p);
     await button(p, '标记已处理').click(); await button(p, '恢复跟进').waitFor();
-    await go('/');
+    await go('/workbench');
     await p.getByTestId('queue-count').waitFor();
     assert.equal(await p.locator('.queue-item').count(), before - 1);
     assert.equal(await p.locator('[data-kind="buyer_reply"]').count(), 0);

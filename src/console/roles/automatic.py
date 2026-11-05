@@ -1,4 +1,4 @@
-"""Rule-only triage with a durable ten-minute admission clock."""
+"""Saved profiles and rules, with a durable ten-minute admission clock."""
 import math
 
 

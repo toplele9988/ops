@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
@@ -8,10 +8,7 @@ import type { OverviewChannel, OverviewResponse, OverviewStage, OverviewStageKey
 import type { PipelineState } from "../types/pipeline";
 import { Chip, Empty, Skeleton } from "../ui/bits";
 import "./Overview.css";
-import { Workbench } from "./Workbench";
-import { PageIntro } from "./overview/PageIntro";
-import { TodayQueue } from "./overview/TodayQueue";
-import { Welcome } from "./overview/Welcome";
+import { BusinessFlow, FLOW_QUERY_KEYS } from "./overview/BusinessFlow";
 
 const STATES: Record<PipelineState, { text: string; tone: Tone; priority: number }> = {
   interrupted: { text: "已中断", tone: "red", priority: 0 },
@@ -91,6 +88,8 @@ function Channel({ channel, now, problems }: { channel: OverviewChannel; now: nu
     <header className="overview-channel-heading">
       <h3 id={`overview-${channel.key}`}>{channel.label}</h3><Status state={state} /><p>{channel.headline}</p>
     </header>
+    <p className="overview-channel-arrival">最近进消息：<Time value={channel.stages.find((stage) => stage.key === "collecting")?.last_arrival_at ?? null} now={now} /></p>
+    <details className="overview-channel-details"><summary>查看渠道详情与处理办法</summary>
     <p className="overview-scroll-hint t-foot">横向滑动查看四个环节 →</p>
     <div className="overview-flow-scroll" tabIndex={0} role="region" aria-label={`${channel.label}四个环节，可横向滚动`}>
       <ol className="overview-flow">{STAGES.map(({ key, label }, index) => <Stage key={key} index={index} now={now} stage={channel.stages.find((stage) => stage.key === key) ?? {
@@ -102,6 +101,7 @@ function Channel({ channel, now, problems }: { channel: OverviewChannel; now: nu
       ? actions.map((problem, index) => <p key={index}>{problem.next_step || "请管理员检查该渠道的服务和统计记录，再刷新确认。"}</p>)
       : <p>请查看<Link to="/system/pipeline">数据管道健康</Link>，核对异常环节的服务和统计记录，再刷新确认。</p>}</div></div>}
     {channel.notes.length > 0 && <div className="overview-channel-notes t-foot">{channel.notes.map((note, index) => <p key={index}>{note}</p>)}</div>}
+    </details>
   </section>;
 }
 
@@ -139,6 +139,7 @@ function History({ history, now }: { history: OverviewResponse["history"]["aliba
 }
 
 export function Overview() {
+  const client = useQueryClient();
   const [now, setNow] = useState(Date.now);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   const q = useQuery({ queryKey: ["overview"], queryFn: () => get<OverviewResponse>("/api/v1/overview"), retry: false, refetchInterval: 60_000 });
@@ -151,30 +152,29 @@ export function Overview() {
   const notDeployed = q.error instanceof ApiError && q.error.status === 404;
 
   return <div className="overview-page">
-    <div className="page-head"><div><p className="overview-eyebrow">运营台 / OVERVIEW</p><h1 className="t-large">全局总览</h1><p>消息有没有进来，资料有没有存好，知识有没有积累。</p></div><button type="button" className="btn" disabled={q.isFetching} onClick={() => q.refetch()}><RefreshCw size={16} aria-hidden="true" />{q.isFetching ? "正在刷新…" : "刷新"}</button></div>
-    <PageIntro page="overview" />
-    <Welcome />
-    <TodayQueue />
+    <div className="page-head"><div><h1 className="t-large">流程总览</h1><p>先看生意走到哪，再处理下一步。</p></div><button type="button" className="btn" disabled={q.isFetching} onClick={() => { void q.refetch(); for (const queryKey of FLOW_QUERY_KEYS) void client.invalidateQueries({ queryKey }); }}><RefreshCw size={16} aria-hidden="true" />{q.isFetching ? "正在刷新…" : "刷新"}</button></div>
+    <BusinessFlow />
     <p className="overview-freshness t-foot">每 60 秒自动刷新 · 时间均为北京时间{data && <> · 检查于 <Time value={data.generated_at} now={now} /></>}</p>
     {q.isLoading && <Skeleton lines={6} />}
     {q.isError && <div className="group overview-error" role="alert" data-overview-error={notDeployed ? "not-deployed" : "read-failed"}><Empty title={notDeployed ? "接口尚未部署" : "读取失败"}>
-      {notDeployed ? "总览接口 /api/v1/overview 返回 404。请管理员部署接口后点击“刷新”。" : "无法读取总览数据，请点击“刷新”重试；仍失败时请检查网络、登录状态或联系管理员。"}
+      {notDeployed ? "渠道状态尚未接通，请联系管理员接通后点击“刷新”。" : "无法读取渠道状态，请点击“刷新”重试；仍失败时请检查网络、登录状态或联系管理员。"}
       {data && "下方保留上次读取结果，不能当作当前状态。"}
     </Empty></div>}
     {data && <>
+      <section className="overview-channels" aria-labelledby="overview-channels"><div className="overview-section-heading"><h2 className="t-headline" id="overview-channels">渠道有没有进消息</h2><Link className="t-foot" to="/system/pipeline">检查渠道状态 →</Link></div>
+        <div className="overview-compact-channels">{channels.map((channel) => <Channel key={channel.key} channel={channel} now={now} problems={problems} />)}</div>
+        {channels.length === 0 && <Empty title="未知 · 暂无渠道状态">接口尚未提供渠道记录，请管理员检查统计服务后刷新。</Empty>}
+      </section>
+      <details className="overview-more"><summary>渠道提醒与处理办法{problems.length > 0 && `（${problems.length} 项）`}</summary>
       <section className="overview-summary" data-state={data.summary.state} aria-label="当前结论" aria-live="polite">
         <div className="overview-summary-title"><Status state={data.summary.state} /><h2 className="t-title">{data.summary.headline}</h2></div>
         {problems.length > 0 && <ol className="overview-problems">{problems.map((problem, index) => {
           const channel = channels.find((item) => item.key === problem.channel || item.label === problem.channel);
           return <li key={index} data-state={channel ? channelState(channel) : "unavailable"}><strong>{channel?.label ?? problem.channel}</strong><div><p>{problem.text}</p><p className="overview-action"><b>下一步：</b>{problem.next_step || "请管理员检查该渠道服务，再刷新确认。"}</p></div></li>;
         })}</ol>}
-      </section>
-      <section className="overview-channels" aria-labelledby="overview-channels"><div className="overview-section-heading"><h2 className="t-headline" id="overview-channels">渠道流水线</h2><Link className="t-foot" to="/system/pipeline">查看管道详情 →</Link></div>
-        {channels.map((channel) => <Channel key={channel.key} channel={channel} now={now} problems={problems} />)}
-        {channels.length === 0 && <Empty title="未知 · 暂无渠道状态">接口尚未提供渠道记录，请管理员检查统计服务后刷新。</Empty>}
-      </section>
-      <div className="overview-resources"><Budget budget={data.model_budget} now={now} /><History history={data.history.alibaba} now={now} /></div>
+      </section></details>
+      <details className="overview-more"><summary>查看模型预算与历史资料覆盖</summary><div className="overview-resources"><Budget budget={data.model_budget} now={now} /><History history={data.history.alibaba} now={now} /></div></details>
     </>}
-    <section className="overview-daily" aria-labelledby="overview-daily"><h2 className="t-headline" id="overview-daily">今日运营</h2><p className="t-foot">待回复、案子、成交简报和资料提醒。</p><Workbench embedded /></section>
+    <nav className="overview-support" aria-label="首页常用入口"><Link to="/workbench">打开待我处理 →</Link><Link to="/supplier-dossiers">查供应商资料 →</Link><Link to="/product-dossiers">查产品资料 →</Link><Link to="/guide">查看怎么用 →</Link></nav>
   </div>;
 }

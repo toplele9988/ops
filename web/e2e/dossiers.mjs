@@ -75,7 +75,7 @@ try{
     await page.locator('.ds-archive-draft').first().locator('summary').click();
     await shot('gaps');
     assert.equal(state.posts.length,2);
-    await visit('');await page.getByRole('region',{name:'供应商缺资料',exact:true}).waitFor();await shot('today-queue');
+    await visit('workbench');await page.getByRole('region',{name:'供应商缺资料',exact:true}).waitFor();await shot('today-queue');
     await page.getByRole('link',{name:'查看缺资料 / 生成问话草稿',exact:true}).click();
     await page.getByRole('heading',{name:'缺资料',exact:true}).waitFor();
     for(const [mode,text] of [['missing','档案接口尚未部署或记录不存在'],['error','读取失败'],['network','读取失败'],['empty','没有符合条件的供应商']]){

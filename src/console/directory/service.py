@@ -13,6 +13,8 @@ from console.inbox.store import read_database
 from console.roles.common import party_name_parts
 from console.roles.triage import named_kind, placeholder_name, rules
 from .refresh import RefreshCache, cached_name
+from console.names import NamesResolver
+from console.names.clean import clean_name
 from .sources import (CACHE_PATH, CONFIG_PATH, DISCOVERY_PATH, STATE_PATH, KINDS,
                       identity_kind, read_config, read_discovery, read_role_metadata, read_state, text)
 
@@ -88,7 +90,8 @@ class WechatDirectory:
         self.include_roles = frozenset(include_roles)
         if not self.include_roles <= ROLES:
             raise ValueError('群角色无效')
-        self.adapter = WechatAdapter(self.state_path, include_roles=ROLES, media_tokens=False)
+        self.names = NamesResolver(self.state_path, directory_path=self.cache_path)
+        self.adapter = WechatAdapter(self.state_path, include_roles=ROLES, media_tokens=False, names_resolver=self.names)
         self.read_conversations = conversation_reader or self._conversations
         self.cache = RefreshCache(self.cache_path, clock=self.clock, contact_fetcher=contact_fetcher, timeout=refresh_timeout,
                                   readonly_client=readonly_client, readonly_client_factory=readonly_client_factory,
@@ -99,6 +102,12 @@ class WechatDirectory:
         notes = []
         cached = self.cache.read()
         identities = {r['id'] for r in cached if r['kind'] == 'group'}
+        # Include message-only groups even if the contacts endpoint omitted them.
+        from console.names.sources import groups_with_messages
+        try:
+            identities.update(groups_with_messages(self.state_path))
+        except Exception:
+            pass  # Existing discovery/cache sources remain usable independently.
         try:
             identities.update(r['id'] for r in self.read_discovery(self.discovery_path) if r['kind'] == 'group')
         except Exception:
@@ -153,6 +162,7 @@ class WechatDirectory:
         cached = read('refresh_cache', lambda: self.cache.read(database=audit_database) if audit_database else self.cache.read(),
                       [], '独立通讯录缓存暂不可读，仍显示其他本地来源')
         cached_by_id = {row['id']: row for row in cached}
+        labels = self.names.snapshot()
         identities = {}
         def add(identity, kind, origin, first=None, last=None):
             if not text(identity) or kind not in KINDS:
@@ -174,11 +184,13 @@ class WechatDirectory:
         for identity, entry in identities.items():
             setting, conv = config.get(identity), convs.get(identity)
             is_group = entry['kind'] == 'group'
-            configured_name = text(setting.get('group_name')) if setting else None
-            observed_name = text(conv.get('buyer_name')) if conv else None
+            configured_name = clean_name(setting.get('group_name')) if setting else None
+            resolved = labels.group(identity) if is_group else labels.contact(identity)
+            observed_name = clean_name(conv.get('buyer_name')) if conv else None
             observed_name = observed_name if observed_name and not placeholder_name(observed_name) else text(state['names'].get(identity))
             if observed_name and placeholder_name(observed_name):
                 observed_name = None
+            observed_name = (resolved.value if resolved.named else None) or observed_name
             metadata = cached_by_id.get(identity, {})
             refreshed_name = cached_name(metadata)
             name = configured_name or refreshed_name or observed_name or {'group': '未命名群', 'private': '未命名联系人', 'official': '未命名公众号'}[entry['kind']]
@@ -209,6 +221,11 @@ class WechatDirectory:
             visible, with_suppliers, visibility = self._visibility(entry['kind'], conv, count, available['inbox'])
             rows.append(dict(entry, sources=sorted(entry['sources']), name=name,
                 name_source='config' if configured_name else 'refresh_cache' if refreshed_name else 'conversation' if observed_name else 'unknown',
+                name_missing=not bool(configured_name or refreshed_name or observed_name),
+                name_missing_reason=None if configured_name or refreshed_name or observed_name else resolved.reason,
+                has_conversation=stats.get('n_messages', 0) > 0,
+                conversation_name_missing=not bool((resolved.value if resolved.named else None) or observed_name),
+                conversation_name_missing_reason=resolved.reason,
                 nickname=text(metadata.get('nickname'), 128), remark=text(metadata.get('remark'), 128),
                 name_updated_at=name_at, name_update_label=name_label,
                 in_directory=bool(entry['sources'] & {'discovery', 'refresh_cache'}), registered=registered, enabled=enabled,
@@ -224,8 +241,12 @@ class WechatDirectory:
                 inbox_visible=visible, inbox_visible_with_suppliers=with_suppliers, inbox_visibility_reason=visibility))
         rows.sort(key=lambda row: (-(row['last_seen'] or 0), row['id']))
         latest_name_at = max((row['name_updated_at'] for row in rows if row['name_updated_at'] is not None), default=None)
+        conversations = [row for row in rows if row['has_conversation']]
+        missing = [row for row in conversations if row['conversation_name_missing']]
         result = dict(ready=available['config'] and available['messages'] and (available['discovery'] or bool(cached)),
                       generated_at=now, sources=available, notes=notes, items=rows,
+                      name_health=dict(total=len(conversations), named=len(conversations) - len(missing), missing=len(missing),
+                                       reasons=dict(Counter(row['conversation_name_missing_reason'] for row in missing))),
                       name_updated_at=latest_name_at, name_update_label=name_update_label(latest_name_at))
         if audit_database is not None:
             result['source_errors'] = source_errors

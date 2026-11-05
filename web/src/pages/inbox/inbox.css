@@ -33,3 +33,12 @@
   .inbox-ops .inbox-purpose { display: block; }
   .inbox-ops .inbox-side-purpose { display: block; }
 }
+
+.translation-toolbar { padding: 8px 16px; border-bottom: 1px solid var(--sep); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.translation-toolbar p { flex-basis: 100%; }
+.message-translation { margin-top: 6px; color: var(--label-2); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reply-translation { padding: 8px 0; display: grid; gap: 8px; }
+.reply-translation > summary { cursor: pointer; font-size: 13px; }
+.reply-translation > * + * { margin-top: 8px; }
+.compose-versions { display: grid; gap: 8px; max-height: 340px; overflow: auto; }
+.compose-versions .quote { white-space: pre-wrap; overflow-wrap: anywhere; }

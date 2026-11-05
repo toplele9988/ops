@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdir } from "node:fs/promises";
 import ts from "typescript";
 import { installFixtures } from "./fixtures.mjs";
+import { checkBusinessFlow } from "./fixtures.flow.mjs";
 
 // Compile the same typed, fictional fixture used during development; no live data is saved.
 const source = await readFile(new URL("../src/fixtures/overview.demo.ts", import.meta.url), "utf8");
@@ -58,10 +59,14 @@ export async function checkOverview({ browser, base, out, viewports }) {
       });
       try {
         await page.goto(`${base}/app/`, { waitUntil: "load" });
-        await page.getByRole("heading", { name: "全局总览", exact: true }).waitFor();
+        await page.getByRole("heading", { name: "流程总览", exact: true }).waitFor();
         if (name === "加载") {
           await page.locator('.overview-page > [aria-busy="true"]').waitFor();
           release();
+        }
+        if (!["404", "500", "断网"].includes(name)) {
+          await page.locator(".overview-channel, .overview-error, .overview-channels").first().waitFor();
+          await page.locator(".overview-more, .overview-channel-details").evaluateAll(nodes => nodes.forEach(node => { node.open = true; }));
         }
         if (["404", "500", "断网"].includes(name)) {
           const state = name === "404" ? "not-deployed" : "read-failed";
@@ -114,7 +119,7 @@ export async function checkOverview({ browser, base, out, viewports }) {
         }
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth <= 2), "No document overflow");
         const firstNav = page.locator(".nav-item").first();
-        assert.equal(await firstNav.innerText(), "总览");
+        assert.equal(await firstNav.innerText(), "首页");
         assert.equal(await firstNav.getAttribute("aria-current"), "page");
         if (out && ["演示", "404", "500"].includes(name)) await page.screenshot({ path: `${out}/${vname}-全局总览-${name}.png`, fullPage: true });
       } catch (error) {
@@ -127,5 +132,6 @@ export async function checkOverview({ browser, base, out, viewports }) {
       if (problems.length) failures.push({ vname, name: `全局总览-${name}`, path: "/overview", problems });
     }
   }
-  return { checked, failures };
+  const flow = await checkBusinessFlow({ browser, base, out, viewports });
+  return { checked: checked + flow.checked, failures: [...failures, ...flow.failures] };
 }

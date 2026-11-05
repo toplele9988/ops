@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS reservations (id INTEGER PRIMARY KEY, at REAL NOT NUL
 CREATE INDEX IF NOT EXISTS reservations_at ON reservations(at);
 CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, at REAL NOT NULL,
  who TEXT NOT NULL, action TEXT NOT NULL, fields TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pretranslate_schedule (
+ id INTEGER PRIMARY KEY CHECK(id=1), next_at REAL NOT NULL);
 '''
 
 
@@ -34,7 +36,7 @@ class RateLimited(Exception):
     def __init__(self, retry_after, result=None):
         self.retry_after = max(1, int(retry_after))
         self.result = result
-        super().__init__('翻译 AI 的独立小时额度已用完，请稍后重试；已完成的译文已保留')
+        super().__init__('本小时翻译额度已用完，%d 分钟后继续' % math.ceil(self.retry_after / 60))
 
 
 class Store:
@@ -67,7 +69,10 @@ class Store:
                 db.row_factory = sqlite3.Row
                 db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA)
                 try:
-                    db.execute("INSERT OR IGNORE INTO settings VALUES(1,'zh-CN',1)")
+                    columns = {row['name'] for row in db.execute('PRAGMA table_info(settings)')}
+                    if 'auto_translate_incoming' not in columns:
+                        db.execute('ALTER TABLE settings ADD COLUMN auto_translate_incoming INTEGER NOT NULL DEFAULT 1')
+                    db.execute("INSERT OR IGNORE INTO settings(id,my_language,auto_native_send,auto_translate_incoming) VALUES(1,'zh-CN',1,1)")
                     # Seed once, so deleting an initial term stays deleted.
                     if not db.execute("SELECT 1 FROM audit WHERE action='initialize'").fetchone():
                         db.executemany('INSERT OR IGNORE INTO glossary(id,term,mode,translation) VALUES(?,?,?,?)',
@@ -94,5 +99,6 @@ class Store:
 
     def quota(self, now, limit):
         with self.read() as db:
-            used = db.execute('SELECT count(*) FROM reservations WHERE at>?', (now - 3600,)).fetchone()[0] if db else 0
-        return dict(hourly_limit=limit, used=used, remaining=max(0, limit - used))
+            rows = [row[0] for row in db.execute('SELECT at FROM reservations WHERE at>? ORDER BY at', (now - 3600,))] if db else []
+        retry = max(1, math.ceil(rows[len(rows) - limit] + 3600 - now)) if len(rows) >= limit else 0
+        return dict(hourly_limit=limit, used=len(rows), remaining=max(0, limit - len(rows)), retry_after=retry)

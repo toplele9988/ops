@@ -36,7 +36,7 @@ try {
     const button = text => page.getByRole('button', { name: text, exact: true });
     const open = async (person) => { await button(`处理${person}`).click(); await page.getByRole('heading', { name: person, exact: true }).waitFor(); };
     const status = async text => { await page.getByRole('status').filter({ hasText: text }).first().waitFor(); };
-    await page.goto(server.base + '/app/customers');
+    await page.goto(server.base + '/app/customers?view=records');
     await open('虚构灯塔采购');
     assert.equal(await page.getByRole('region', { name: '往来时间线' }).getByText('请提供虚构产品报价。').count(), 1);
     await button('编辑资料与跟进日期').click();
@@ -181,7 +181,7 @@ try {
   const page = await context.newPage();
   const problems = [];
   await installPartiesFixtures(page, problems, { empty: true });
-  await page.goto(server.base + '/app/customers');
+  await page.goto(server.base + '/app/customers?view=records');
   await page.getByRole('heading', { name: '这里还没有客户：去商机沟通把会话归到客户' }).waitFor();
   assert.ok(await page.getByRole('link', { name: '去商机沟通', exact: true }).isVisible());
   await page.screenshot({ path: out + 'mobile-empty.png', fullPage: true });

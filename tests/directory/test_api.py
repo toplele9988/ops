@@ -266,7 +266,7 @@ def test_rehearsal_automount_uses_throwaway_cache_and_disables_refresh(tmp_path)
         mounted = stack.enter_context(patch.object(api, 'build', side_effect=isolated_build))
         routes = rehearsal.build_routes(str(tmp_path))
         mounted.assert_called_once()
-        assert {route.path for route in routes} == {route.path for route in client.routes}
+        assert {route.path for route in routes if route.path.startswith('/api/v1/directory/')} == {route.path for route in client.routes}
         route = next(route for route in routes if route.path.endswith('/refresh'))
         result = asyncio.run(route.endpoint(request(fields={'confirm': '1'})))
         assert result.status_code == 403 and '演练' in json.loads(result.body)['error']

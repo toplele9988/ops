@@ -5,6 +5,7 @@ import { installPartiesFixtures } from './fixtures.parties.mjs';
 import { installDealFixtures } from './fixtures.deals.mjs';
 import { installQueueFixtures, queueResponse } from './fixtures.queue.mjs';
 import { installDossierFixtures } from './fixtures.dossiers.mjs';
+import { installProfilesFixtures } from './fixtures.profiles.mjs';
 export { conversationKey, supplierKey };
 
 export async function installFixtures(page, problems = []) {
@@ -27,11 +28,6 @@ export async function installFixtures(page, problems = []) {
   await installInboxFixtures(page, inbox, problems);
   const queue = await installQueueFixtures(page, problems, { queueOnly: true });
   queue.items = queue.items.map(i => ({ ...i, to: i.to.replaceAll('demo-alibaba', conversationKey).replaceAll('demo-wechat', supplierKey) }));
-  await page.route('**/api/v1/ops/queue', route => {
-    if (route.request().method() !== 'GET') return route.fallback();
-    const items = queue.items.filter(i => i.kind !== 'buyer_reply' || inbox.conversations[0].workflow_state !== 'done');
-    return route.fulfill({ json: queueResponse(items) });
-  });
   await page.route('**/api/v1/ops/drafts', route => {
     if (route.request().method() !== 'GET') return route.fallback();
     return route.fulfill({ json: { dry_run: true, items: [...inbox.outbox.map(d => ({ ...d, source: 'inbox', reviewed_at: null })), ...parties.parties.flatMap(p => p.drafts.map(d => ({ ...d, source: 'parties' }))) ] } });
@@ -39,6 +35,13 @@ export async function installFixtures(page, problems = []) {
   // Project current canonical party after every merge / undo without moving raw ownership.
   for (const conv of inbox.conversations) Object.defineProperty(conv, 'customer_name', { configurable: true, enumerable: true, get: () => parties.parties.find(p => p.id === canonical(conv.customer_party_id ?? 1))?.name ?? '', set: () => {} });
   await installDossierFixtures(page);
+  await installProfilesFixtures(page, problems, { parties });
+  // Registered after the dossier fixtures: the newest route wins, and the day's queue needs real items.
+  await page.route('**/api/v1/ops/queue', route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const items = queue.items.filter(i => i.kind !== 'buyer_reply' || inbox.conversations[0].workflow_state !== 'done');
+    return route.fulfill({ json: queueResponse(items) });
+  });
   // Minimal read-only AI operator snapshot (fictional): everything off, rehearsal only.
   await page.route('**/api/v1/operator**', route => {
     if (route.request().method() !== 'GET') return route.fallback();

@@ -34,7 +34,7 @@ async function mainFlow(name,viewport) {
     await page.goto(server.base+'/app/inbox'); await button(page,'处理询盘').click(); await page.locator('.bubble').last().waitFor();
     await button(page,'放大图片').click(); await page.getByRole('dialog',{name:'图片',exact:true}).waitFor(); await button(page,'关闭').click();
     await button(page,'打开文件').click(); await page.getByText('fictional product information',{exact:true}).waitFor(); const download=page.waitForEvent('download'); await page.getByRole('link',{name:'下载文件',exact:true}).click(); assert.equal(await readFile(await (await download).path(),'utf8'),'fictional product information'); await button(page,'关闭文件').click();
-    await button(page,'译').last().click(); await page.getByText('请确认虚构灯具 X 的外箱尺寸。',{exact:true}).waitFor(); assert.equal(state.translations,1);
+    await page.getByTestId('message-translation').getByText('请确认虚构灯具 X 的外箱尺寸。',{exact:true}).waitFor(); assert.equal(state.translations,1);
     await profile(page); await button(page,'AI 起草回复').click();
     const reply=page.getByRole('textbox',{name:'回复内容（可编辑）'});
     await poll(async()=>(await reply.inputValue()).includes('I will confirm'),'Draft adopted');
@@ -83,6 +83,78 @@ async function failureFlow(name,viewport) {
     results.push({name:name+'-failures',passed:true,send_attempts:state.requests.filter(r=>r.body.action==='send').length});
   } catch(e) {await page.screenshot({path:out+name+'-failure-errors.png',fullPage:true}); throw e;} finally {await context.close();}
 }
-try {for(const [name,viewport] of [['desktop',{width:1440,height:900}],['mobile',{width:400,height:860}]]) for(const flow of [mainFlow,failureFlow]) {try{await flow(name,viewport);console.log('PASS',name,flow.name);}catch(e){errors.push({name,flow:flow.name,error:e.stack});console.error('FAIL',name,flow.name,e.stack);}}}
+async function translationFlow(name, viewport) {
+  const state = createInboxState(); state.nativeLanguage = 'es';
+  const {context, page, problems} = await setup(viewport, state);
+  try {
+    await page.goto(server.base + '/app/inbox'); await button(page, '处理询盘').click();
+    const chinese = page.getByTestId('message-translation');
+    await chinese.getByText('请确认虚构灯具 X 的外箱尺寸。', {exact:true}).waitFor();
+    assert.equal(state.translations, 1);
+    assert.equal(await page.locator('.bubble.me [data-testid="message-translation"]').count(), 0);
+    await button(page, '只看中文').click();
+    assert.ok(!(await page.locator('.bubble.them .bubble-text').innerText()).includes('Please confirm'), 'Only Chinese hides the original prose');
+    assert.ok(await button(page, '打开文件').isVisible());
+    assert.ok(await button(page, '放大图片').isVisible());
+    await page.reload(); await button(page, '看原文').waitFor(); await chinese.waitFor();
+    assert.equal(state.translations, 1, 'Reload uses persistent translation cache');
+    await page.locator('.conv-snip').filter({hasText:'请确认虚构灯具 X 的外箱尺寸。'}).first().waitFor({state:'attached'});
+    await button(page, '看原文').click();
+    await page.locator('.bubble.them .bubble-text').getByText('Please confirm the carton size for Fictional Lamp X.', {exact:true}).waitFor();
+    const reply = page.getByRole('textbox', {name:'回复内容（可编辑）'});
+    await reply.fill('请确认虚构灯具资料。'); await button(page, '生成英文及当地语言稿').click();
+    await page.getByRole('region', {name:'英文版', exact:true}).waitFor();
+    await page.getByRole('region', {name:'当地语言版', exact:true}).waitFor();
+    assert.equal(state.outbox.length, 0, 'Generating never sends');
+    await button(page, '采用回复稿，填入回复框').click();
+    assert.equal(await reply.inputValue(), 'Please confirm the fictional lamp details.\n\nPor favor, confirme los datos de la lámpara ficticia.');
+    assert.equal(state.outbox.length, 0, 'Adopting never sends');
+    await button(page, '确认发送…').click(); assert.equal(state.outbox.length, 0);
+    await button(dialog(page), '取消').click();
+    state.badCompose = true; await reply.fill('请确认虚构灯具资料。'); await button(page, '生成英文及当地语言稿').click();
+    await page.getByText('当地语言版的型号有增减，请核对：ZX-999', {exact:true}).waitFor();
+    assert.ok(await button(page, '采用回复稿，填入回复框').isDisabled());
+    state.badCompose = false;
+    state.messages.push({role:'buyer', text:'您好，请确认虚构资料。', sent_at:new Date().toISOString()});
+    await button(page, '刷新对话').click(); await page.locator('.bubble').last().getByText('您好，请确认虚构资料。', {exact:true}).waitFor();
+    await page.waitForTimeout(200); assert.equal(state.translations, 1, 'Chinese never consumes quota');
+    await fits(page); await page.screenshot({path:out + name + '-translation.png',fullPage:true});
+    assert.deepEqual(problems, []); results.push({name:name+'-translation',passed:true});
+  } finally { await context.close(); }
+}
+async function quotaAndSettingsFlow(name, viewport) {
+  const state=createInboxState(); state.quotaExhausted=true; state.nativeLanguage=null;
+  const {context,page,problems}=await setup(viewport,state);
+  try {
+    await page.goto(server.base+'/app/inbox'); await button(page,'处理询盘').click();
+    await page.getByText('本小时翻译额度已用完，2 分钟后继续',{exact:true}).waitFor();
+    assert.equal(await page.locator('[role="alert"]').count(),0,'Quota is a quiet status');
+    assert.equal(state.translations,0);
+    state.quotaExhausted=false;
+    const reply=page.getByRole('textbox',{name:'回复内容（可编辑）'});
+    await reply.fill('请确认虚构灯具资料。'); await button(page,'生成英文及当地语言稿').click();
+    await page.getByRole('region',{name:'英文版',exact:true}).waitFor();
+    assert.equal(await page.getByRole('region',{name:'当地语言版',exact:true}).count(),0);
+    assert.ok(await button(page,'采用回复稿，填入回复框').isEnabled(),'Unknown native language permits English');
+    await page.getByLabel('确认客户母语',{exact:true}).selectOption('en'); await button(page,'锁定母语').click();
+    await page.getByText('客户母语：英语。本次只生成英文。',{exact:false}).waitFor();
+    await button(page,'生成英文及当地语言稿').click();
+    await page.getByRole('region',{name:'英文版',exact:true}).waitFor();
+    assert.equal(await page.getByRole('region',{name:'当地语言版',exact:true}).count(),0,'English native language has one version');
+    await page.goto(server.base+'/app/system/language');
+    const incoming=page.getByRole('checkbox',{name:'收到的消息自动翻成中文',exact:true});
+    const local=page.getByRole('checkbox',{name:'回复同时附当地语言',exact:true});
+    assert.ok(await incoming.isChecked()); assert.ok(await local.isChecked());
+    await incoming.uncheck(); await local.uncheck(); await button(page,'保存设置').click();
+    await poll(()=>!state.langSettings.auto_translate_incoming&&!state.langSettings.auto_native_send,'Settings saved');
+    await page.reload(); assert.equal(await incoming.isChecked(),false); assert.equal(await local.isChecked(),false);
+    await page.goto(server.base+'/app/inbox'); await button(page,'处理询盘').click(); await page.locator('.bubble').last().waitFor();
+    await page.waitForTimeout(200); assert.equal(state.translations,0);
+    const autoRequests=state.requests.filter(r=>r.path==='/lang/translate'&&r.body.mode==='auto').length;
+    assert.equal(autoRequests,1,'Disabled setting does not start automatic translation');
+    assert.deepEqual(problems,[]); results.push({name:name+'-quota-settings',passed:true});
+  } finally {await context.close();}
+}
+try {for(const [name,viewport] of [['desktop',{width:1440,height:900}],['mobile',{width:400,height:860}]]) for(const flow of [mainFlow,failureFlow,translationFlow,quotaAndSettingsFlow]) {try{await flow(name,viewport);console.log('PASS',name,flow.name);}catch(e){errors.push({name,flow:flow.name,error:e.stack});console.error('FAIL',name,flow.name,e.stack);}}}
 finally {await browser.close();await server.close();await writeFile(out+'results.json',JSON.stringify({results,errors},null,2));}
 if(errors.length) process.exitCode=1;

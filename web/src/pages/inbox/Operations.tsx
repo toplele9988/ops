@@ -5,6 +5,7 @@ import { get, qs } from "../../api";
 import { uuid } from "../../lib_uuid";
 import { formatTime } from "../../format";
 import { Empty, Sheet, Skeleton } from "../../ui/bits";
+import { NativeComposePanel } from "./LanguagePanels";
 import { inboxAction, supplierDraft, type Context, type Result } from "../../ops/inbox";
 
 export function useInboxAction(key: string, onResult: (result: Result) => void) {
@@ -22,6 +23,7 @@ export function Reply({ convKey, name, reply, setReply, onResult }: { convKey: s
   const error = send.error ? "草稿保存结果未能确认，已停止发送。请先刷新记录并人工核对，避免重复操作。" : "";
   return <div className="composer">
     <label className="inbox-field"><span>回复内容（可编辑）</span><textarea className="textarea" rows={3} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="写回复，或点 AI 起草回复" /></label>
+    <NativeComposePanel convKey={convKey} reply={reply} onAdopt={setReply} />
     <div className="composer-row"><span className="t-cap">演练：只保存草稿，不会发给对方。</span><button className="btn primary" disabled={invalid || uncertain || send.isPending} onClick={() => setConfirming(true)}>确认发送…</button></div>
     {reply.includes("【待确认") && <p className="t-foot">请先核对并修改【待确认】内容。</p>}
     {error && <div role="alert" className="callout">{error}<button className="btn sm" onClick={() => { setUncertain(false); send.reset(); request.current = uuid(); }}>我已人工核对，重新编辑</button></div>}

@@ -13,7 +13,7 @@ export function createInboxState() {
   return { conversations: [conv(conversationKey, 'alibaba', '虚构买家会话'), conv(supplierKey, 'wechat', '虚构供应商群', 'supplier')],
     messages: [{ role: 'seller', text: 'Which fictional model do you need?', sent_at: at }, { role: 'buyer', text: 'Please confirm the carton size for Fictional Lamp X.', sent_at: at, blocks: [{ type: 'text', text: 'Please confirm the carton size for Fictional Lamp X.' }, { type: 'image', media: 'fictional-image' }, { type: 'file', media: 'fictional-file', name: '虚构产品资料.txt' }] }],
     customers: [{ key: customerKey, buyer_name: '虚构客户甲', country: '虚构地区', channel: 'alibaba', account: 'fictional-account', n_conversations: 1, n_messages: 2, first_seen: at, last_seen: at, waiting_reply: true }, { key: otherCustomerKey, buyer_name: '虚构客户乙', country: '虚构地区乙', channel: 'whatsapp', account: 'fictional-account', n_conversations: 1, n_messages: 3, first_seen: at, last_seen: at, waiting_reply: true }],
-    draft: null, deals: [{ id: 7, title: '虚构已有案子', stage_label: '询盘', stage: 'inquiry', status: 'open' }], links: [], outbox: [], requests: [], receipts: new Map(), revision: 1, failSend: false, failList: false, delayList: 0, failContext: false, failDraft: false, failSupplierSend: false, translations: 0 };
+    draft: null, deals: [{ id: 7, title: '虚构已有案子', stage_label: '询盘', stage: 'inquiry', status: 'open' }], links: [], outbox: [], requests: [], receipts: new Map(), revision: 1, failSend: false, failList: false, delayList: 0, failContext: false, failDraft: false, failSupplierSend: false, translations: 0, translationCache: new Map(), quotaExhausted: false, nativeLanguage: "en", langSettings: { my_language: "zh-CN", auto_native_send: true, auto_translate_incoming: true } };
 }
 export async function installInboxFixtures(page, state, problems) {
   await installFixtures(page, problems);
@@ -40,8 +40,53 @@ export async function installInboxFixtures(page, state, problems) {
       }
       if (method === 'GET' && path === '/parties-ops' && !state.partiesOps) return ok(list(state.customers.map((c, i) => ({ id: i + 1, name: c.buyer_name, country: c.country }))));
       if (method === 'GET' && path === '/customers') { const q = url.searchParams.get('q'); return ok(list(state.customers.filter(c => !q || c.buyer_name.includes(q)))); }
-      if (method === 'GET' && path === '/deals') { const q = url.searchParams.get('q'); return ok(list(state.deals.filter(d => (!q || d.title.includes(q)) && (!url.searchParams.get('status') || url.searchParams.get('status') === 'all' || d.status === url.searchParams.get('status'))))); }
-      if (method === 'POST' && path === '/lang/translate') { state.translations++; return ok({ target_language: body.target_language, items: body.message_indices.split(',').map(raw => ({ index: Number(raw), source_text: state.messages[Number(raw)].text, source_hash: 'fictional-hash', text: '请确认虚构灯具 X 的外箱尺寸。', error: null, complete: true, cached: false, chunks: [] })) }); }
+      if (method === 'GET' && path === '/deals') {
+        const p=url.searchParams,q=p.get('q');
+        const filtered=state.deals.filter(d=>(!q||d.title.includes(q))&&(!p.get('status')||p.get('status')==='all'||d.status===p.get('status'))&&(!p.get('stage')||d.stage===p.get('stage'))&&(!p.get('waiting')||(p.get('waiting')==='us'?d.needs_attention:d.waiting_on.length>0)));
+        const number=Number(p.get('page')||1),size=Number(p.get('page_size')||30);
+        return ok({items:filtered.slice((number-1)*size,number*size),total:filtered.length,page:number,page_size:size});
+      }
+      if (method === 'GET' && path === '/lang/settings') return ok({ settings: state.langSettings, languages: [{ code: 'zh-CN', label: '简体中文' }, { code: 'en', label: '英语' }, { code: 'es', label: '西班牙语' }], quota: { hourly_limit: 120, used: state.translations, remaining: state.quotaExhausted ? 0 : 120 - state.translations } });
+      if (method === 'POST' && path === '/lang/settings') {
+        state.langSettings = { my_language: body.my_language, auto_native_send: body.auto_native_send === '1', auto_translate_incoming: body.auto_translate_incoming === '1' };
+        return ok({ settings: state.langSettings, languages: [], quota: { hourly_limit: 120, used: state.translations, remaining: 120 - state.translations } });
+      }
+      const contact = () => ({ channel: 'alibaba', conversation_key: conversationKey, native_language: state.nativeLanguage, source: state.nativeLanguage ? 'manual' : null, confidence: state.nativeLanguage ? 1 : 0, locked: Boolean(state.nativeLanguage), country_hint: null });
+      if (method === 'GET' && path === '/lang/contact') return ok({ contact: contact() });
+      if (method === 'POST' && path === '/lang/contact') { state.nativeLanguage = body.native_language; return ok({ contact: contact() }); }
+      if (method === 'POST' && path === '/lang/detect') return ok({ contact: contact() });
+      if (method === 'POST' && path === '/lang/compose') {
+        if (state.quotaExhausted) return ok({ error: '本小时翻译额度已用完，2 分钟后继续', retry_after: 120 }, 429);
+        const targets = ['en', ...(state.langSettings.auto_native_send && state.nativeLanguage && state.nativeLanguage !== 'en' ? [state.nativeLanguage] : [])];
+        const validation = { ok: !state.badCompose, missing: [], added: state.badCompose ? ['ZX-999'] : [] };
+        const versions = targets.map(language => ({ language, text: language === 'en' ? 'Please confirm the fictional lamp details.' : 'Por favor, confirme los datos de la lámpara ficticia.', back_translation: '请确认虚构灯具资料。', validation, back_validation: validation }));
+        return ok({ native_language: state.nativeLanguage, my_language: state.langSettings.my_language, include_local: state.langSettings.auto_native_send, text: versions.map(v => v.text).join('\n\n'), english_text: versions[0].text, local_text: versions[1]?.text ?? null, back_translation: versions.map(v => v.back_translation).join('\n\n'), versions, validation, back_validation: validation, contact: contact(), warnings: [{ kind: state.badCompose ? 'error' : 'info', message: state.badCompose ? '当地语言版的型号有增减，请核对' : '两段回复均已核对，发送仍须人工确认', fragments: validation.added }] });
+      }
+      if (method === 'POST' && path === '/lang/translate') {
+        if (body.mode === 'preview') {
+          const previews = JSON.parse(body.conversation_keys).flatMap(key => {
+            const conv = state.conversations.find(c => c.key === key);
+            const cached = conv && state.translationCache.get(key + ':' + conv.last.text);
+            return cached ? [{ conversation_key: key, source_text: conv.last.text, text: cached }] : [];
+          });
+          return ok({ previews });
+        }
+        const automatic = ['auto', 'cached'].includes(body.mode);
+        const indices = body.message_indices ? body.message_indices.split(',').map(Number) : state.messages.map((_, i) => i);
+        const selected = indices.filter(i => !automatic || (state.messages[i].role === 'buyer' && !/[\u3400-\u9fff]/.test(state.messages[i].text)));
+        const missing = selected.filter(i => !state.translationCache.has(body.conversation_key + ':' + state.messages[i].text));
+        const canTranslate = !state.quotaExhausted && body.mode !== 'cached' && (!automatic || state.langSettings.auto_translate_incoming);
+        if (canTranslate && missing.length) {
+          state.translations++;
+          for (const i of missing) state.translationCache.set(body.conversation_key + ':' + state.messages[i].text, '请确认虚构灯具 X 的外箱尺寸。');
+        }
+        const items = selected.map(index => {
+          const text = state.translationCache.get(body.conversation_key + ':' + state.messages[index].text) ?? null;
+          return { index, source_text: state.messages[index].text, source_hash: 'fictional-hash', text, error: text ? null : '这一块尚未完成', complete: Boolean(text), cached: !missing.includes(index), chunks: [] };
+        });
+        const exhausted = state.quotaExhausted && missing.length > 0;
+        return ok({ target_language: 'zh-CN', items, quota_exhausted: exhausted, retry_after: exhausted ? 120 : 0, hint: exhausted ? '本小时翻译额度已用完，2 分钟后继续' : '' });
+      }
       const match = path.match(/^\/inbox\/conversations\/([^/]+)(.*)$/);
       if (!match) return route.fallback();
       const [, convKey, suffix] = match;

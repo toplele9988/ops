@@ -13,16 +13,18 @@ function Preferences({ settings, languages }: { settings: LangSettings; language
   const client = useQueryClient();
   const [mine, setMine] = useState(settings.my_language);
   const [native, setNative] = useState(settings.auto_native_send);
+  const [incoming, setIncoming] = useState(settings.auto_translate_incoming ?? true);
   const save = useMutation({
-    mutationFn: () => postForm("/api/v1/lang/settings", { my_language: mine, auto_native_send: native ? "1" : "0" }),
+    mutationFn: () => postForm("/api/v1/lang/settings", { my_language: mine, auto_native_send: native ? "1" : "0", auto_translate_incoming: incoming ? "1" : "0" }),
     onSuccess: () => { client.invalidateQueries({ queryKey: ["lang-settings"] }); toast("语言设置已保存，会话阅读和回复会使用这个默认设置"); },
     onError: (e: Error) => toast(langError(e), "error"),
   });
   return (
     <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }} style={{ display: "grid", gap: 12 }}>
       <div className="form-grid"><label><span>我的阅读语言</span><select value={mine} onChange={(e) => setMine(e.target.value)}>{languages.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}</select></label></div>
-      <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}><input type="checkbox" checked={native} onChange={(e) => setNative(e.target.checked)} /><span>回复时，默认开启「按客户母语发送」</span></label>
-      <p className="t-foot">母语版和回译稿都要先核对，再点「采用」。阿里仍需复制到 Win10 发送，WhatsApp 仍需你确认发送。</p>
+      <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}><input type="checkbox" checked={incoming} onChange={(e) => setIncoming(e.target.checked)} /><span>收到的消息自动翻成中文</span></label>
+      <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}><input type="checkbox" checked={native} onChange={(e) => setNative(e.target.checked)} /><span>回复同时附当地语言</span></label>
+      <p className="t-foot">回复先出英文；母语已确认时，可同时附当地语言。两段和回译稿都要先核对，再采用并确认发送。</p>
       <div><button type="submit" className="btn primary" disabled={save.isPending}>{save.isPending ? "正在保存…" : "保存设置"}</button></div>
       {save.error && <p role="alert" className="t-foot" style={{ color: "var(--red)" }}>{langError(save.error)}</p>}
     </form>
@@ -95,11 +97,11 @@ export function LanguageSettings() {
   const rows = (contacts.data?.items ?? []).filter((c) => !filter || `${c.display_name ?? ""} ${languageName(c.native_language, languages)}`.toLowerCase().includes(filter.toLowerCase()));
   return (
     <>
-      <div className="page-head"><div><h1 className="t-large"><Languages size={28} aria-hidden="true" style={{ verticalAlign: "text-bottom", marginRight: 8 }} />语言设置</h1><p>客户消息译成你看得懂的语言；你的回复先生成客户母语版和回译稿，核对后再采用。</p></div></div>
+      <div className="page-head"><div><h1 className="t-large"><Languages size={28} aria-hidden="true" style={{ verticalAlign: "text-bottom", marginRight: 8 }} />语言设置</h1><p>收到的消息自动翻成中文；回复生成英文和当地语言，核对后再采用。</p></div></div>
       <section className="block"><h2 className="group-title">我的语言与回复习惯</h2><div className="group" style={{ padding: 16 }}>
         {settings.isLoading && <Skeleton lines={2} />}
         {settings.error && <Empty title="语言设置暂时无法读取" action={<button type="button" className="btn" onClick={() => settings.refetch()}>重新读取</button>}>{langError(settings.error)}</Empty>}
-        {settings.data && <><Preferences key={`${settings.data.settings.my_language}-${settings.data.settings.auto_native_send}`} settings={settings.data.settings} languages={languages} /><p className="t-cap num" style={{ marginTop: 12 }}>语言功能独立额度：本小时已用 {settings.data.quota.used} 次，还可用 {settings.data.quota.remaining} 次，上限 {settings.data.quota.hourly_limit} 次。缓存命中不占额度。</p></>}
+        {settings.data && <><Preferences key={`${settings.data.settings.my_language}-${settings.data.settings.auto_native_send}-${settings.data.settings.auto_translate_incoming}`} settings={settings.data.settings} languages={languages} /><p className="t-cap num" style={{ marginTop: 12 }}>语言功能独立额度：本小时已用 {settings.data.quota.used} 次，还可用 {settings.data.quota.remaining} 次，上限 {settings.data.quota.hourly_limit} 次。缓存命中不占额度。</p></>}
       </div></section>
       <section className="block"><h2 className="group-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>灯光行业术语<button type="button" className="btn sm" onClick={() => setEditingTerm(null)}><Plus size={14} aria-hidden="true" />添加术语</button></h2>
         <p className="t-foot" style={{ marginBottom: 8 }}>DMX、RDM、Art-Net 等预置为保持原样。品牌名可加入术语表，固定专业译法可选「使用指定译法」。</p>
