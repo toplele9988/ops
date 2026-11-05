@@ -29,6 +29,8 @@ _GROUP_PREFIX = re.compile(r'^(?:' + _GROUP_TOKEN + r'[' + _SEPARATORS + r']*)+'
 _GROUP_SUFFIX = re.compile(r'(?:[' + _SEPARATORS + r']*' + _GROUP_TOKEN + r')+$', re.I)
 _BARE_PREFIX = re.compile(r'^(SUP|CUS)(?![A-Za-z])', re.I)
 _BARE_SUFFIX = re.compile(r'(?<![A-Za-z])(SUP|CUS)$', re.I)
+# Work-group names may carry the tag mid-name: "…乐初 SUP 工作对接", "乐初SUP-…".
+_BARE_TOKEN = re.compile(r'(?<![A-Za-z])(SUP|CUS)(?![A-Za-z])', re.I)
 _EDGE_SEPARATORS = re.compile(r'^[' + _SEPARATORS + r']+|[' + _SEPARATORS + r']+$')
 _NUMBER = r'\d+(?:,\d{3})*(?:\.\d+)?'
 _CURRENCY = r'(?:USD|CNY|RMB|EUR|GBP|HKD|JPY|AUD|CAD|美元|人民币|欧元|元)'
@@ -48,6 +50,9 @@ def party_name_parts(value):
     original = str(value or '')
     codes = {m[1].upper() for m in PARTY_CODE.finditer(original)}
     name = PARTY_CODE.sub('', original)
+    if re.search(_COMPANY, name, re.I):  # inside our work-group names only; "X SUP Tools" stays a brand
+        codes.update(m[1].upper() for m in _BARE_TOKEN.finditer(name))
+        name = re.sub(r'\s{2,}', ' ', _BARE_TOKEN.sub('', name)).strip() or name
     while True:
         before = name
         name = _EDGE_SEPARATORS.sub('', name)

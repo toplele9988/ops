@@ -26,6 +26,9 @@ def test_unknown_and_future_waiting_times():
     ('虚构星河 - LC沟通', '虚构星河'),
     ('SUP0011-乐初工作群', 'SUP0011-乐初工作群'),
     ('虚构 SUP Tools', '虚构 SUP Tools'),
+    ('虚构烟机特效-乐初 SUP 工作对接', '虚构烟机特效'),
+    ('乐初SUP-虚构之星影视灯工作交流', '乐初-虚构之星影视灯工作交流'),
+    ('虚构 SUPER 灯光-乐初工作群', '虚构 SUPER 灯光'),
     ('虚构LC科技', '虚构LC科技'),
     ('虚构 CIRCUS -乐初工作群', '虚构 CIRCUS'),
     ('虚构星河SUP（0011）～乐初工作群', '虚构星河'),
@@ -109,3 +112,13 @@ def test_waiting_text_is_consistent_across_roles(env, age, expected):
         env.inbox.conversations[key]['messages'][0]['role'] = 'seller'
         patrol = env.roles.run_patrol('fictional-owner')
         assert expected in patrol['output_text'] and '545 小时' not in patrol['output_text']
+
+
+@pytest.mark.parametrize('name,kind', [
+    ('虚构烟机特效-乐初 SUP 工作对接', 'supplier'), ('乐初SUP-虚构之星影视灯工作交流', 'supplier'),
+    ('虚构 MC -乐初 CUS 工作沟通', 'customer'), ('虚构 SUP Tools', None), ('虚构 SUPER 灯光-乐初工作群', None),
+    ('虚构张三 CUS', 'customer'), ('SUP 虚构李四', 'supplier'),
+])
+def test_boss_sup_cus_tags_anywhere_in_work_group_names(name, kind):
+    from console.roles.triage import named_kind
+    assert named_kind(name.casefold()) == kind
