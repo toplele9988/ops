@@ -8,7 +8,8 @@ LOG = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, operator, events, sources, *, gaps=None, archive_events=None, triage=None, interval=45, batch=100,
+    def __init__(self, operator, events, sources, *, gaps=None, archive_events=None, triage=None, incremental=None,
+                 interval=45, batch=100,
                  seed_at_tail=False):
         if not 30 <= interval <= 60:
             raise ValueError('operator_interval_invalid')
@@ -16,6 +17,7 @@ class Worker:
         self.gaps, self.interval, self.batch = gaps, interval, batch
         self.archive_events = archive_events
         self.triage = triage
+        self.incremental = incremental
         # Production starts at the current newest row: history is covered by dossiers,
         # and replaying years of messages would spend one model call per old message.
         self.seed_at_tail = seed_at_tail
@@ -99,6 +101,8 @@ class Worker:
                 result['archive'] = self._run('archive', self.archive_events.poll)
             if self.triage:
                 result['triage'] = self._run('triage', self.triage.poll)
+            if self.incremental:
+                result['dossier_incremental'] = self._run('dossier_incremental', self.incremental.poll)
             if include_tick:
                 result['tick'] = self._run('tick', self.operator.tick)
             return result

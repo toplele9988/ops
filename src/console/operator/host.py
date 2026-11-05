@@ -10,6 +10,7 @@ from console.channels import shared_inbox
 from console.dossiers.store import DB_PATH as DOSSIERS_PATH
 from console.inbox.store import INBOUND_PATH, WECHAT_PATH
 from console.kb import default_hub
+from console.dossiers.incremental.schedule import DailyIncremental
 from console.roles.automatic import AutomaticTriage
 from console.roles.service import Roles
 from .bridge import FakeBridge
@@ -21,6 +22,7 @@ from .sources import Source, LocalInbox
 from .worker import Worker
 
 OPERATOR_PATH = Path('/var/lib/imgw/ops-app/operator/operator.sqlite3')
+INCREMENTAL_LOGS = Path('/var/lib/imgw/ops-app/dossiers/incremental-runs')
 
 
 def sources():
@@ -34,7 +36,7 @@ def sources():
 
 def assemble(*, operator_path=OPERATOR_PATH, archive_path=ARCHIVE_PATH,
              inputs=None, hub=None, model=None, dossiers_path=DOSSIERS_PATH,
-             language=None, quote_policy=None, triage_inbox=None):
+             language=None, quote_policy=None, triage_inbox=None, incremental=False):
     inputs = sources() if inputs is None else inputs
     inbox = LocalInbox(inputs)
     if language is None:
@@ -53,13 +55,17 @@ def assemble(*, operator_path=OPERATOR_PATH, archive_path=ARCHIVE_PATH,
                   runner=None, clock=operator.clock, dossiers_path=dossiers_path)
     worker = Worker(operator,events,inputs,gaps=Gaps(operator,dossiers_path),
                     archive_events=ArchiveEvents(operator,events),
-                    triage=AutomaticTriage(roles, operator.store, operator.clock), seed_at_tail=True)
+                    triage=AutomaticTriage(roles, operator.store, operator.clock),
+                    incremental=DailyIncremental(operator.store, operator.clock, log_dir=INCREMENTAL_LOGS,
+                                                 source_root=Path(__file__).resolve().parents[2]) if incremental else None,
+                    seed_at_tail=True)
     return operator, worker
 
 
 def build(app_module):
     from console.v3_operator_api import build as api
-    operator, worker = assemble()
+    # Only the production host starts the daily dossier update process.
+    operator, worker = assemble(incremental=True)
     app_module.operator_worker = worker
     return api(app_module,service=operator)
 
