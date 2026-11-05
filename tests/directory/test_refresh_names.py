@@ -218,7 +218,9 @@ def test_partial_and_missing_name_rows_do_not_invent_fields(env):
         {'userName': group(3), 'nickname': '虚构错误大小写', 'displayName': '虚构未证实字段'}]})
     result = env.service(client).refresh()
     assert result['groups_named'] == 1 and result['missing_group_ids'] == [group(2), group(3), group(4)]
-    assert result['complete'] is False and len(client.brief_calls) == 1
+    # Unnamed groups are asked alone; this fixed reply names other groups too,
+    # which is an unconfirmable format, so the single retries stop at once.
+    assert result['complete'] is False and client.brief_calls == [[group(n) for n in (1, 2, 3, 4)], [group(2)]]
     rows = env.rows()
     assert rows[group(1)]['name'] == 'SUP001 虚构可确认群'
     assert all(rows[group(n)]['name'] == '未命名群' for n in (2, 3, 4))
@@ -369,3 +371,30 @@ def test_bad_cache_name_timestamp_keeps_names_and_overview_available(env, bad_ti
     assert summary['name_updated_at'] == NOW
     assert summary['not_enrolled_suspected'] == {'supplier': 1, 'customer': 1}
     assert fingerprint(env.cache) == before
+
+
+def test_groups_unnamed_in_a_batch_are_asked_once_alone(env):
+    env.discover(group(1), group(2), group(3))
+    def answer(batch):
+        if len(batch) > 1:  # the provider drops some names in multi-ID replies
+            return brief({group(1): 'SUP001 虚构批量名'})
+        return brief({batch[0]: '虚构单查名 ' + batch[0][-6:]} if batch[0] == group(2) else {})
+    client = FakeClient(contacts(), answer)
+    result = env.service(client).refresh()
+    assert client.brief_calls == [[group(1), group(2), group(3)], [group(2)], [group(3)]]
+    assert result['groups_named'] == 2 and result['missing_group_ids'] == [group(3)]
+    rows = env.rows()
+    assert rows[group(1)]['name'] == 'SUP001 虚构批量名' and rows[group(2)]['name'].startswith('虚构单查名')
+
+
+def test_single_name_retry_stops_at_first_failure(env):
+    env.discover(group(1), group(2), group(3))
+    def answer(batch):
+        if len(batch) > 1:
+            return brief({})
+        raise RuntimeError('fictional provider failure')
+    client = FakeClient(contacts(), answer)
+    result = env.service(client).refresh()
+    assert client.brief_calls == [[group(1), group(2), group(3)], [group(1)]]
+    assert result['groups_named'] == 0 and result['complete'] is False
+    assert sorted(i for f in result['group_failures'] for i in f['ids']) == [group(1), group(2), group(3)]

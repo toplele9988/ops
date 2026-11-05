@@ -16,6 +16,7 @@ from .sources import text
 from console.roles.triage import placeholder_name
 
 COOLDOWN = 600
+SINGLE_MARGIN = 3  # seconds kept free before the refresh deadline
 _CONTACTS = '''CREATE TABLE IF NOT EXISTS directory_contacts (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('group','private','official')),
     first_seen REAL NOT NULL, last_seen REAL NOT NULL)'''
@@ -261,19 +262,25 @@ class RefreshCache:
         if valid and not callable(brief_fetcher):
             failures.append(dict(ids=valid, reason='尚未配置只读群简要接口，暂未补充群名'))
         elif valid:
+            def ask(batch):
+                payload = self._call_once(lambda: brief_fetcher(batch), deadline, brief=True)
+                try:
+                    names = _brief_rows(payload, batch)
+                except (ValueError, TypeError, UnicodeError, RecursionError):
+                    raise RefreshFailed('群简要接口返回格式无法确认；本次不重试，已有名称仍保留') from None
+                self._save({}, self.clock(), names=names)
+                accepted = {i for i, value in names.items() if cached_name(value)}
+                named.update(accepted)
+                return accepted
+
+            unnamed, stopped = [], False
             for offset in range(0, len(valid), 50):
                 batch = valid[offset:offset + 50]
                 try:
-                    payload = self._call_once(lambda: brief_fetcher(batch), deadline, brief=True)
-                    try:
-                        names = _brief_rows(payload, batch)
-                    except (ValueError, TypeError, UnicodeError, RecursionError):
-                        raise RefreshFailed('群简要接口返回格式无法确认；本次不重试，已有名称仍保留') from None
-                    self._save({}, self.clock(), names=names)
-                    accepted = {i for i, value in names.items() if cached_name(value)}
-                    named.update(accepted)
-                    missing = sorted(set(batch) - accepted)
-                    if missing:
+                    missing = sorted(set(batch) - ask(batch))
+                    if len(batch) > 1:
+                        unnamed += missing
+                    elif missing:
                         failures.append(dict(ids=missing, reason='群简要接口未返回有效名称或备注'))
                 except RefreshFailed as error:
                     failures.append(dict(ids=batch, reason=str(error)))
@@ -281,6 +288,20 @@ class RefreshCache:
                     # batches are launched after it. Late workers cannot save.
                     if valid[offset + 50:]:
                         failures.append(dict(ids=valid[offset + 50:], reason='前一批未完成，本次未继续请求'))
+                    stopped = True
+                    break
+            # The provider often omits names in multi-ID replies but answers the
+            # same group asked alone. Ask each still-unnamed group once, in order,
+            # while time remains; stop at the first failed or unknown reply.
+            for index, identity in enumerate(unnamed if not stopped else []):
+                if deadline - time.monotonic() < SINGLE_MARGIN:
+                    failures.append(dict(ids=unnamed[index:], reason='补充群名时间不够，下次再查'))
+                    break
+                try:
+                    if identity not in ask([identity]):
+                        failures.append(dict(ids=[identity], reason='群简要接口未返回有效名称或备注'))
+                except RefreshFailed as error:
+                    failures.append(dict(ids=unnamed[index:], reason=str(error)))
                     break
         missing = sorted(set(candidates) - named)
         return dict(refreshed_at=refreshed_at, received=len(rows),
