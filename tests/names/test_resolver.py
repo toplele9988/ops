@@ -158,3 +158,18 @@ def test_unnamed_group_shows_member_names_like_wechat(state):
     two = 'fiction-pair@chatroom'
     members.save(two, {'fiction-a': ('虚构甲', None), 'fiction-b': (None, '虚构乙')}, NOW)
     assert resolver.group_name(two) == '虚构甲、虚构乙'
+
+
+def test_alibaba_country_from_buyer_id_only_when_payload_is_empty():
+    from console.names.country import country_from_alibaba_id
+    from console.inbox.model import aggregate_messages
+    assert country_from_alibaba_id('tm:ar29277068500abcd') == ('AR', '阿根廷')
+    assert country_from_alibaba_id('tm:uk1000') == ('GB', '英国')
+    assert country_from_alibaba_id('tm:ali_123') is None
+    assert country_from_alibaba_id('13937043') is None
+    def row(i, conv, country=''):
+        return (f'id{i}', json.dumps(dict(account='fictional-seller', conversation_id=conv, buyer_name='虚构买家',
+                content='虚构询价', role='buyer', sent_at=f'2030-01-0{i}T00:00:00+00:00', country=country)))
+    convs = {c['buyer_name'] + str(c['n_messages']) + c['country'] for c in aggregate_messages(
+        [row(1, 'tm:ar1000x'), row(2, 'tm:il2000', '黎巴嫩'), row(3, 'tm:ali_9')]).values()}
+    assert convs == {'虚构买家1阿根廷', '虚构买家1黎巴嫩', '虚构买家1'}

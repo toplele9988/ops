@@ -11,6 +11,13 @@ class BadRequest(ValueError):
     """Only fixed Chinese parameter errors may cross the API boundary."""
 
 
+def _id_country(conversation_id):
+    """Fallback only: Alibaba buyer IDs carry the account's registration country."""
+    from console.names.country import country_from_alibaba_id
+    found = country_from_alibaba_id(conversation_id)
+    return found[1] if found else ''
+
+
 CHANNELS = ('alibaba', 'wechat', 'whatsapp', 'website')
 WAITING_WINDOW_DAYS = 30
 
@@ -130,7 +137,7 @@ def aggregate_messages(rows):
         key = make_key('conversation', 'alibaba', account, conversation_id)
         conversations[key] = dict(key=key, channel='alibaba', account=account,
                                   buyer_name=last['buyer_name'],
-                                  country=next((m['country'] for m in reversed(messages) if m['country']), ''),
+                                  country=next((m['country'] for m in reversed(messages) if m['country']), '') or _id_country(conversation_id),
                                   first_seen=messages[0]['sent_at'], last_seen=last['sent_at'],
                                   source_url=last['url'] if last['url'] and last['url'].startswith('https://') else None,
                                   n_messages=len(messages), messages=tuple(messages), waiting_reply=waiting,
