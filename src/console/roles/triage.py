@@ -4,6 +4,7 @@ import re
 
 from console.inbox.model import is_closing
 from console.kb.text import tokens
+from . import dossier_links
 from .common import PARTY_LABELS, clean_party_name, fingerprint, last_known, party_name_parts, safe, seconds
 
 IDENTITY_KINDS = frozenset(('supplier', 'forwarder', 'vendor'))
@@ -81,6 +82,8 @@ def combine_buyers(prepared, previous, inputs):
     primary = {}
     for conv, rule in prepared:
         group = rule['buyer_fingerprint']
+        if rule['reason'].startswith('档案：') or '档案冲突：' in rule['reason']:
+            continue
         if not group or rule['action'] == 'ignore' or rule['suggested_party_kind'] != 'customer' or len(owners.get(group, ())) > 1:
             continue
         confirmed = accepted.get(group, [])
@@ -141,9 +144,21 @@ def create_context(conv, inputs):
     return reason, confidence
 
 
-def eligible(conversation, now):
+def latest_message(conversation):
+    messages = list(conversation.get('messages') or ())
+    if conversation.get('last'):
+        messages.append(conversation['last'])
+    return max((m for m in messages if seconds(m.get('sent_at')) is not None),
+               key=lambda m: seconds(m['sent_at']), default=None)
+
+
+def eligible(conversation, now, dossier=False):
     if conversation.get('counterpart_role') in ('learning', 'internal', 'ignored'):
         return False
+    if dossier:
+        last = latest_message(conversation)
+        at = seconds(last.get('sent_at')) if last else seconds(conversation.get('last_seen'))
+        return at is not None and 0 <= now - at <= 180 * 86400
     last = last_known(conversation)
     at = seconds(last.get('sent_at')) if last else None
     return bool(last and last['role'] == 'buyer' and (not is_closing(last['text']) or ignore_hint(conversation))
@@ -157,6 +172,28 @@ def candidates(inputs):
 
 
 def rules(conv, inputs):
+    links = getattr(inputs, 'dossier_links', {}).get(conv['key'], [])
+    link, party, conflict = dossier_links.match(links, inputs.rows['parties'])
+    if link:
+        return dict(action='identity', suggested_deal_id=None,
+                    suggested_party_id=party['id'] if party else None,
+                    suggested_party_name=safe(party['name'] if party else link['name'], 100),
+                    suggested_party_kind=party['kind'] if party else link['kind'],
+                    confidence=.95 if party else .9, certain=True,
+                    reason=f"档案：该群是供应商「{safe(link['name'], 100)}」的工作群（来源 {safe(link['source_id'], 200) or '未标注'}）")
+    result = name_rules(conv, inputs)
+    if conflict:
+        result.update(certain=False, reason=result['reason'] + '；档案冲突：' + conflict)
+    return result
+
+
+def preserve_conflict(output, rule):
+    if '；档案冲突：' in rule['reason']:
+        output['reason'] = '档案冲突：' + rule['reason'].split('；档案冲突：', 1)[1] + '；' + output['reason']
+    return output
+
+
+def name_rules(conv, inputs):
     name = (conv.get('buyer_name') or '').strip().casefold()
     identities = {i['conversation_key']: i for i in inputs.rows['identities']}
     parties = inputs.rows['parties']

@@ -6,8 +6,12 @@ The installer initializes the private store before the host starts this worker.
 from pathlib import Path
 from contextlib import asynccontextmanager
 from console.archive.store import ARCHIVE_PATH
+from console.channels import shared_inbox
+from console.dossiers.store import DB_PATH as DOSSIERS_PATH
 from console.inbox.store import INBOUND_PATH, WECHAT_PATH
 from console.kb import default_hub
+from console.roles.automatic import AutomaticTriage
+from console.roles.service import Roles
 from .bridge import FakeBridge
 from .archive_events import ArchiveEvents
 from .gaps import Gaps
@@ -17,7 +21,6 @@ from .sources import Source, LocalInbox
 from .worker import Worker
 
 OPERATOR_PATH = Path('/var/lib/imgw/ops-app/operator/operator.sqlite3')
-DOSSIERS_PATH = Path('/var/lib/imgw/ops-app/dossiers/dossiers.sqlite3')
 
 
 def sources():
@@ -31,7 +34,7 @@ def sources():
 
 def assemble(*, operator_path=OPERATOR_PATH, archive_path=ARCHIVE_PATH,
              inputs=None, hub=None, model=None, dossiers_path=DOSSIERS_PATH,
-             language=None, quote_policy=None):
+             language=None, quote_policy=None, triage_inbox=None):
     inputs = sources() if inputs is None else inputs
     inbox = LocalInbox(inputs)
     if language is None:
@@ -46,7 +49,11 @@ def assemble(*, operator_path=OPERATOR_PATH, archive_path=ARCHIVE_PATH,
         hub=default_hub() if hub is None else hub,
         quote_policy=quote_policy, language=language,
         model=AiTask() if model is None else model, bridge=FakeBridge())
-    worker = Worker(operator,events,inputs,gaps=Gaps(operator,dossiers_path),archive_events=ArchiveEvents(operator,events),seed_at_tail=True)
+    roles = Roles(archive_path, inbox=shared_inbox() if triage_inbox is None else triage_inbox,
+                  runner=None, clock=operator.clock, dossiers_path=dossiers_path)
+    worker = Worker(operator,events,inputs,gaps=Gaps(operator,dossiers_path),
+                    archive_events=ArchiveEvents(operator,events),
+                    triage=AutomaticTriage(roles, operator.store, operator.clock), seed_at_tail=True)
     return operator, worker
 
 

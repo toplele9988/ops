@@ -139,7 +139,9 @@ class Env:
 
 
 @pytest.fixture(autouse=True)
-def offline(monkeypatch):
+def offline(monkeypatch, tmp_path):
+    from console.dossiers import store as dossier_store
+    monkeypatch.setattr(dossier_store, 'DB_PATH', tmp_path / 'disabled-dossiers.sqlite3')
     def blocked(*args, **kwargs):
         raise AssertionError('roles tests must never access network or real AI')
     monkeypatch.setattr(socket.socket, 'connect', blocked)

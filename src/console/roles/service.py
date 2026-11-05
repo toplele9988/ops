@@ -13,7 +13,7 @@ from console.deals.service import Deals
 from console.inbox import ai as inbox_ai
 from console.kb.drafting import draft_context
 from console.kb.hub import Hub, default_hub
-from . import ai, brief, patrol, triage, validation
+from . import ai, brief, dossier_links, patrol, triage, validation
 from . import deal_summary as secretary
 from .common import (Config, ROLE_INFO, SEVERITY, conversation_data, evidence_for,
                      duration, fingerprint, last_known, message_ref, safe, seconds, stamp, summary)
@@ -40,12 +40,13 @@ class TransactionStore:
 
 class Roles:
     def __init__(self, path=ARCHIVE_PATH, *, store=None, inbox=None, runner=ai.DEFAULT_RUNNER,
-                 hub=None, clock=None, config=None, today=None, followups_path=None):
+                 hub=None, clock=None, config=None, today=None, followups_path=None, dossiers_path=None):
         self.store = Store(store.path, connection=store.connection, target_version=4) if store else Store(path, target_version=4)
         self.clock = clock or time.time
         self.config = config or Config()
         self.today = today
         self.followups_path = followups_path
+        self.dossiers_path = dossiers_path
         self.inbox = inbox if inbox is not None else shared_inbox()
         self.runner = inbox_ai.official_runner if runner is ai.DEFAULT_RUNNER else runner
         if hub is None:
@@ -72,8 +73,8 @@ class Roles:
 
     def _run(self, role, kind, key, data, output, evidence, render, who, now, *,
              ai_data=None, parse=None, skip_reason=None, effect=None, refresh_effect=False, apply=True):
-        # Triage v3 invalidates old cleaning, ignore and duplicate decisions.
-        fp = fingerprint(dict(version=3 if role == 'triage' else 2, role=role, data=data))
+        # Invalidate suggestions generated before dossier evidence was available.
+        fp = fingerprint(dict(version=4 if role == 'triage' else 2, role=role, data=data))
         previous = reused(self.store, role, key, fp)
         if previous:
             if effect and refresh_effect and apply:
@@ -162,13 +163,18 @@ class Roles:
             return [suggestion_view(r) for r in db.execute(query + ' ORDER BY updated_at DESC,id DESC', args)]
 
     @serialized
-    def scan_triage(self, who, *, apply=True):
+    def scan_triage(self, who, *, apply=True, use_ai=True):
         now = self.clock()
         inputs = self.inputs(now)
+        inputs.dossier_links = dossier_links.index(dossier_links.load(self.dossiers_path, archive_path=self.store.path))
         existing = {s['conversation_key']: s for s in self._suggestion_rows()}
         linked = {c['conversation_key'] for c in inputs.rows['deal_conversations']}
+        # Existing customer identities still use the original deal-suggestion rules.
+        linked.update(i['conversation_key'] for i in inputs.rows['identities']
+                      if i['conversation_key'] in inputs.dossier_links)
         eligible = [c for c in inputs.conversations.values() if c['key'] not in linked
-                    and existing.get(c['key'], {}).get('status', 'pending') == 'pending' and triage.eligible(c, now)]
+                    and existing.get(c['key'], {}).get('status', 'pending') == 'pending'
+                    and triage.eligible(c, now, c['key'] in inputs.dossier_links)]
         eligible.sort(key=lambda c: (-c['last_seen'], c['key']))
         runs, suggestions, attempted, limited = [], [], False, None
         choices = triage.candidates(inputs)
@@ -179,43 +185,47 @@ class Roles:
             except Exception:
                 detailed = None
             conv = detailed or conv
-            if not triage.eligible(conv, now):
+            if not triage.eligible(conv, now, conv['key'] in inputs.dossier_links):
                 continue
             prepared.append((conv, triage.rules(conv, inputs)))
         prepared.sort(key=lambda pair: (-(seconds(pair[0].get('last_seen')) or 0), pair[0]['key']))
         triage.combine_buyers(prepared, existing.values(), inputs)
         for conv, rule in prepared:
             facts = conversation_data(conv, 12)
+            latest = triage.latest_message(conv) if conv['key'] in inputs.dossier_links else last_known(conv)
             certain = rule.pop('certain')
             if rule['suggested_deal_id'] is not None and not rule.get('duplicate_of'):
                 title = safe(inputs.deals[rule['suggested_deal_id']]['title'], 150)
                 rule['reason'] = '建议关联“' + title + '”；' + rule['reason']
             if rule['action'] != 'ignore' and not rule.get('duplicate_of'):
-                rule['reason'] += '；对方消息：' + duration(last_known(conv)['sent_at'], now)[0]
+                rule['reason'] += ('；最近消息：' if conv['key'] in inputs.dossier_links else '；对方消息：') + duration(latest['sent_at'] if latest else None, now)[0]
             evidence = [dict(kind='conversation', id=conv['key'])] + [m['reference'] for m in facts['messages']]
-            latest_ref = message_ref(conv['key'], last_known(conv))
-            if latest_ref not in evidence:
-                evidence.append(latest_ref)
+            if latest:
+                latest_ref = message_ref(conv['key'], latest)
+                if latest_ref not in evidence:
+                    evidence.append(latest_ref)
             evidence += [dict(kind='deal', id=c['id']) for c in choices]
             evidence += [dict(kind='identity', id=i['id']) for i in inputs.rows['identities'] if i['conversation_key'] == conv['key']]
             if rule['suggested_party_id']:
                 evidence.append(dict(kind='party', id=rule['suggested_party_id']))
             if rule.get('duplicate_of'):
                 evidence.append(dict(kind='conversation', id=rule['duplicate_of']))
-            data = dict(conversation=facts, candidates=choices, rule=rule)
+            links = inputs.dossier_links.get(conv['key'], [])
+            evidence += [dict(kind='dossier_source', id=link['source_id'], supplier_id=link['supplier_id']) for link in links]
+            data = dict(conversation=facts, candidates=choices, rule=rule, dossier_links=links, use_ai=use_ai)
             ai_data = dict(conversation=dict(channel=facts['channel'], title=facts['buyer_name'],
                 messages=[dict(role=m['role'], text=m['text']) for m in facts['messages']]), candidates=choices)
             def save(db, run, conv=conv):
                 save_suggestion(db, run, summary(conv), who, now)
             try:
                 run = self._run('triage', 'conversation', conv['key'], data, rule, evidence, triage.render, who, now,
-                                ai_data=None if certain else ai_data,
-                                parse=lambda parsed, rule=rule: ai.triage(parsed, rule, choices), effect=save,
-                                skip_reason='本次扫描的 AI 尝试额度已用完，请按规则建议人工核对' if attempted and not certain else None,
+                                ai_data=None if certain or not use_ai else ai_data,
+                                parse=lambda parsed, rule=rule: triage.preserve_conflict(ai.triage(parsed, rule, choices), rule), effect=save,
+                                skip_reason='本次扫描的 AI 尝试额度已用完，请按规则建议人工核对' if use_ai and attempted and not certain else None,
                                 apply=apply)
             except RateLimited as exc:
                 run, limited = exc.result, exc
-            attempted |= not run.get('reused', False) and not certain and self.runner is not None
+            attempted |= use_ai and not run.get('reused', False) and not certain and self.runner is not None
             runs.append(run)
             if not apply:
                 suggestions.append(dict(run['output_json'], conversation=summary(conv), conversation_key=conv['key']))

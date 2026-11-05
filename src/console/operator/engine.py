@@ -56,9 +56,15 @@ class Operator:
             db.execute('INSERT INTO operator_events VALUES(?,?,?,?,?)',
                        (event['id'], digest, dumps(event), 'evaluating', self.clock()))
         # The durable claim precedes model invocation. Crash/timeout never causes automatic reinvocation.
-        context, prompt, output = None, None, None
+        context, prompt, output, missing = None, None, None, None
         try:
-            context = self.source.snapshot(event, self.clock())
+            try:
+                context = self.source.snapshot(event, self.clock())
+            except ValueError as error:
+                # Unlinked conversations go to the ownership queue, not the model.
+                if str(error) == 'identity_required':
+                    missing = 'identity_required'
+                raise
             prompt = model_context(context, getattr(self.source, 'hub', None), self.day())
             if event['kind'] == 'inbound':
                 output = self.model.decide(prompt)
@@ -83,12 +89,20 @@ class Operator:
                 output['planning_error'] = 'planning_failed'
         if not proposals:
             proposals = [dict(kind='ask_owner', contact_key=event['conversation_key'], parts=[], fact_ids=[],
-                              payload=dict(reason='identity_context_or_plan_required'))]
+                              payload=dict(reason=missing or 'identity_context_or_plan_required'))]
         with self.store.write() as db:
             settings = self.store.settings(db)
             self.store.decision(db, self.clock(), 'decision', dict(trigger=event, context=context,
                 model_context=prompt, output=output, proposals=proposals), event['id'])
+            merged = []
             for proposal in proposals:
+                if proposal['kind'] == 'ask_owner':
+                    # One open owner question per conversation and reason; later
+                    # messages only bump its counter instead of adding new cards.
+                    open_id = self._merge_owner_question(db, proposal, event, context)
+                    if open_id is not None:
+                        merged.append(open_id)
+                        continue
                 profile = (context or {}).get('contacts', {}).get(proposal['contact_key'], {})
                 errors = guard(proposal, context or {}, self.day())
                 state, reason, due = evaluate(settings, proposal, profile, self.clock())
@@ -101,7 +115,28 @@ class Operator:
                      due, int(not settings['enabled'] or settings['dry_run']), dumps(proposal), self.clock(), self.clock())).lastrowid
                 self.store.decision(db, self.clock(), 'policy', dict(state=state, reason=reason, settings=settings), event['id'], row_id)
             db.execute("UPDATE operator_events SET state='complete' WHERE id=?", (event['id'],))
-            return self._event_actions(db, event['id'])
+            actions = self._event_actions(db, event['id'])
+            for row_id in merged:
+                actions.append(Store.action(db.execute('SELECT * FROM operator_actions WHERE id=?', (row_id,)).fetchone()))
+            return actions
+
+    def _merge_owner_question(self, db, proposal, event, context):
+        reason = (proposal.get('payload') or {}).get('reason')
+        rows = db.execute("SELECT * FROM operator_actions WHERE kind='ask_owner' AND contact_key=? AND state NOT IN "
+                          "('sent','done','rejected','unknown','failed','duplicate') ORDER BY id", (proposal['contact_key'],))
+        for row in rows.fetchall():
+            data = json.loads(row['data'])
+            if (data.get('payload') or {}).get('reason') != reason:
+                continue
+            data['repeats'] = int(data.get('repeats') or 1) + 1
+            data['last_event_id'] = event['id']
+            if context is not None:
+                data['context'] = context
+            db.execute('UPDATE operator_actions SET data=?,updated_at=? WHERE id=?', (dumps(data), self.clock(), row['id']))
+            self.store.decision(db, self.clock(), 'policy', dict(state='merged', reason='same_open_owner_question',
+                                repeats=data['repeats']), event['id'], row['id'])
+            return row['id']
+        return None
 
     def _plan(self, ctx, event, plan):
         origin = ctx['contacts'][ctx['contact_key']]
@@ -366,7 +401,7 @@ class Operator:
                             transport=self.bridge.name, types=list(TYPES))
             actions = [self.store.action(r) for r in db.execute("SELECT * FROM operator_actions WHERE id IN ("
                 "SELECT id FROM operator_actions WHERE state NOT IN ('sent','done','rejected','unknown','failed','duplicate') ORDER BY id LIMIT 200) "
-                "OR id IN (SELECT id FROM operator_actions ORDER BY id DESC LIMIT 200) ORDER BY id DESC")]
+                "OR id IN (SELECT id FROM operator_actions WHERE reason!='same_open_owner_question' ORDER BY id DESC LIMIT 200) ORDER BY id DESC")]
             decisions = [dict(r, data=json.loads(r['data'])) for r in db.execute('SELECT * FROM operator_decisions ORDER BY id DESC LIMIT 100')]
             events = [dict(r) for r in db.execute("SELECT id,state,created_at FROM operator_events WHERE state!='complete'")]
             from .rehearsal import preview

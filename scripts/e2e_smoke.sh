@@ -7,9 +7,12 @@ PORT=${REHEARSAL_PORT:-18902}
 WEB=web
 LOG=$(mktemp)
 (cd "$WEB" && npm run build >/dev/null 2>&1) || { echo "前端构建失败"; exit 2; }
-sudo -n rm -rf /var/lib/imgw/ops-app/dist/assets
-sudo -n cp -a "$WEB/dist/." /var/lib/imgw/ops-app/dist/ && sudo -n chown -R imgw:imgw /var/lib/imgw/ops-app/dist
-sudo -n find /var/lib/imgw/ops-app/dist -type f -exec chmod 0640 {} \;
+# The rehearsal server serves web/dist directly; publishing is part of installation.
+if [ "${SMOKE_PUBLISH:-0}" = 1 ]; then
+  sudo -n rm -rf /var/lib/imgw/ops-app/dist/assets
+  sudo -n cp -a "$WEB/dist/." /var/lib/imgw/ops-app/dist/ && sudo -n chown -R imgw:imgw /var/lib/imgw/ops-app/dist
+  sudo -n find /var/lib/imgw/ops-app/dist -type f -exec chmod 0640 {} \;
+fi
 sudo -n pkill -u imgw -f "^/opt/imgw/venv/bin/python scripts/rehearsal_server.py" 2>/dev/null; sleep 1
 (sudo -n -u imgw env IMGW_REHEARSAL=1 REHEARSAL_PORT=$PORT PYTHONPATH="${SMOKE_PYTHONPATH:-$PWD/src:/opt/imgw/wechat}" /opt/imgw/venv/bin/python scripts/rehearsal_server.py >"$LOG" 2>&1 &)
 for i in $(seq 1 60); do grep -q REHEARSAL_READY "$LOG" 2>/dev/null && break; sleep 1; done

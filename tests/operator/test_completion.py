@@ -268,3 +268,49 @@ def test_alibaba_real_event_never_enters_fake_transport(system):
     row=one(s.op.handle(dict(id='fictional-ali',kind='inbound',conversation_key=key,deal_id=1)),'reply_customer')
     result=s.op.write('approve',row['id'],dict(operation_key='fictional-ali-approval'),'fictional-owner')
     assert result['action']['reason']=='channel_unavailable' and not s.bridge.calls
+
+
+def test_unlinked_conversation_keeps_one_owner_question(system):
+    s = system
+    key = '["conversation","wechat","fictional","unlinked-room"]'
+    import base64
+    key = base64.urlsafe_b64encode(key.encode()).decode().rstrip('=')
+    first = s.op.handle(dict(id='unlinked-1', kind='inbound', conversation_key=key))
+    second = s.op.handle(dict(id='unlinked-2', kind='inbound', conversation_key=key))
+    third = s.op.handle(dict(id='unlinked-3', kind='inbound', conversation_key=key))
+    assert [a['kind'] for a in first] == ['ask_owner']
+    assert first[0]['data']['payload']['reason'] == 'identity_required'
+    assert second[-1]['id'] == third[-1]['id'] == first[0]['id']
+    assert third[-1]['data']['repeats'] == 3
+    assert not s.model.calls
+    with s.op.store.read() as db:
+        rows = db.execute("SELECT count(*) FROM operator_actions WHERE contact_key=?", (key,)).fetchone()[0]
+    assert rows == 1
+    # Once the owner closes it, the next message opens a fresh question.
+    with s.op.store.write() as db:
+        db.execute("UPDATE operator_actions SET state='rejected' WHERE id=?", (first[0]['id'],))
+    fourth = s.op.handle(dict(id='unlinked-4', kind='inbound', conversation_key=key))
+    assert fourth[0]['id'] != first[0]['id']
+
+
+def test_collapse_script_merges_existing_owner_questions(system, tmp_path):
+    import base64, importlib.util, pathlib
+    s = system
+    key = base64.urlsafe_b64encode(b'["conversation","wechat","fictional","old-room"]').decode().rstrip('=')
+    # Simulate the pre-fix ledger: several open owner questions on one conversation.
+    with s.op.store.write() as db:
+        for i in range(4):
+            db.execute("INSERT INTO operator_actions(event_id,kind,contact_key,level,state,reason,due_at,dry_run,data,created_at,updated_at) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (f'old-{i}', 'ask_owner', key, 0, 'pending', 'owner_required', None, 1,
+                       '{"kind":"ask_owner","parts":[],"fact_ids":[],"payload":{"reason":"identity_required"}}', 1, 1))
+    root = pathlib.Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location('collapse', root/'deploy/operator/collapse_owner_questions.py')
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    assert mod.collapse(s.op.store.path)['merged'] == 3
+    result = mod.collapse(s.op.store.path, apply=True, backup=str(tmp_path/'backup.sqlite3'))
+    assert result['open_after'] == result['open_before'] - 3 and (tmp_path/'backup.sqlite3').exists()
+    shown = [a for a in s.op.read()['actions'] if a['contact_key'] == key]
+    assert len(shown) == 1 and shown[0]['data']['repeats'] == 4
+    # New messages keep merging into the surviving question.
+    again = s.op.handle(dict(id='old-new', kind='inbound', conversation_key=key))
+    assert again[-1]['id'] == shown[0]['id'] and again[-1]['data']['repeats'] == 5

@@ -40,11 +40,13 @@ export function Operator() {
   const toggle = (scope: string, key: string, label: string, checked: boolean) => <label className="operator-toggle"><input aria-label={label} type="checkbox" checked={checked} disabled={busy} onChange={e => change(scope, key, e.target.checked)} />{label}</label>;
   const actionCard = (a: Action, review: boolean) => {
     const contact = contacts[a.contact_key];
+    const unlinked = a.kind === 'ask_owner' && a.data.payload?.reason === 'identity_required';
     return <article className="operator-card" key={a.id} data-testid={`action-${a.id}`}>
       <div className="operator-card-heading"><strong>{kinds[a.kind] ?? a.kind}</strong><span className="operator-badge">{states[a.state] ?? a.state}</span></div>
       <p>{contact?.name ?? '待核对联系人'} · 第 {a.level === 99 ? '人工' : a.level} 级 · {contact?.channel ?? '渠道待核对'}</p>
       <p className="t-sub">{reasons[a.reason] ?? (a.reason.startsWith('bridge_') ? '发送结果已记录' : a.reason === 'authorized' ? '已获得自动授权' : '请查看决策记录核对原因')}{a.due_at ? ` · 预计北京时间 ${beijing(a.due_at)}` : ''}</p>
-      {a.data.parts.length > 0 ? <blockquote>{a.data.parts.join('\n\n')}</blockquote> : <p>已备好案子操作，核对后执行。</p>}
+      {a.data.parts.length > 0 ? <blockquote>{a.data.parts.join('\n\n')}</blockquote> : unlinked ? <p>这个会话还没确认是哪个客户或供应商，AI 无法起草。确认归属后，新消息会自动处理。</p> : <p>已备好案子操作，核对后执行。</p>}
+      {(a.data.repeats ?? 1) > 1 && <p className="t-sub">之后又来了 {(a.data.repeats ?? 1) - 1} 条新消息，已合并到这一条。</p>}
       {contact?.timezone && <p className="t-sub">对方时区：{contact.timezone} · 语言：{contact.language ?? '待核对'} · 语气：{contact.tone === 'friendly' ? '亲切' : '专业'}</p>}
       <div className="operator-actions">
         {review && <>
@@ -52,6 +54,7 @@ export function Operator() {
           <button className="btn" disabled={busy || a.data.rehearsal_only || a.state === 'sending' || !a.data.parts.length} onClick={() => { setEditor(a); setText(a.data.parts.join('\n\n')); }}>修改</button>
           <button className="btn" disabled={busy || a.state === 'sending'} onClick={() => { setRejecting(a); setReason(''); }}>拒绝</button>
         </>}
+        {unlinked && <Link className="btn primary" to={`/triage?${new URLSearchParams({ conversation: a.contact_key })}`}>去确认归属</Link>}
         {a.data.context?.deal?.id && <Link className="btn" to={`/deals/${a.data.context.deal.id}`}>查看案子</Link>}
         <a className="btn" href="#operator-decisions">查看决策记录</a>
       </div>
