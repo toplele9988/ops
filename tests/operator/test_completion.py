@@ -314,3 +314,20 @@ def test_collapse_script_merges_existing_owner_questions(system, tmp_path):
     # New messages keep merging into the surviving question.
     again = s.op.handle(dict(id='old-new', kind='inbound', conversation_key=key))
     assert again[-1]['id'] == shown[0]['id'] and again[-1]['data']['repeats'] == 5
+
+
+def test_supplier_group_without_deal_stays_quiet_and_skips_model(system):
+    from console.inbox.model import make_key
+    s = system
+    key = make_key('conversation', 'wechat', 'fictional-account', 'supplier-group-no-deal')
+    s.inbox.messages[key] = [dict(role='buyer', text='Fictional price sheet attached.', sent_at=1893492000)]
+    with s.archive.write() as db:
+        insert(db, 'parties', dict(id=9, kind='supplier', name='Fictional quiet supplier', status='active',
+                                   created_at='2030-01-01T10:00:00+00:00', updated_at='2030-01-01T10:00:00+00:00'), 'fixture')
+        insert(db, 'identities', dict(party_id=9, conversation_key=key, channel='wechat',
+                                      created_at='2030-01-01T10:00:00+00:00', created_by='fixture'), 'fixture')
+    assert s.op.handle(dict(id='quiet-1', kind='inbound', conversation_key=key)) == []
+    assert not s.model.calls
+    with s.op.store.read() as db:
+        assert db.execute('SELECT count(*) FROM operator_actions WHERE contact_key=?', (key,)).fetchone()[0] == 0
+        assert db.execute("SELECT state FROM operator_events WHERE id='quiet-1'").fetchone()[0] == 'complete'

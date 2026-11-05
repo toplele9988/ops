@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 def isolated(monkeypatch, tmp_path):
     original = sqlite3.connect
     def connect(path, *a, **kw):
-        assert str(path).startswith((str(tmp_path) + '/', tmp_path.as_uri() + '/')), 'only fictional temporary stores allowed'
+        assert str(path) == ':memory:' or str(path).startswith((str(tmp_path) + '/', tmp_path.as_uri() + '/')), 'only fictional temporary stores allowed'
         return original(path, *a, **kw)
     def blocked(*a, **kw):
         raise AssertionError('dossier tests cannot connect to a network')

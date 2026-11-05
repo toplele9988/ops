@@ -66,7 +66,14 @@ class Operator:
                     missing = 'identity_required'
                 raise
             prompt = model_context(context, getattr(self.source, 'hub', None), self.day())
-            if event['kind'] == 'inbound':
+            origin = context.get('contacts', {}).get(context.get('contact_key')) or {}
+            supplier_chat = (event['kind'] == 'inbound' and not context.get('deal')
+                             and str(origin.get('type', '')).startswith('supplier_'))
+            if supplier_chat:
+                # Supplier chatter outside a deal feeds the dossier updater, not the operator.
+                plan = dict(intent='routine', fact_ids=[])
+                output = dict(plan=plan, model=dict(actual_model='rules:supplier_no_deal'))
+            elif event['kind'] == 'inbound':
                 output = self.model.decide(prompt)
                 plan = output['plan']
                 if (set(plan)-{'intent','fact_ids'} or plan.get('intent') not in
@@ -81,13 +88,15 @@ class Operator:
         except Exception:
             plan = dict(intent='uncertain', fact_ids=[])
             output = dict(plan=plan, model=dict(actual_model='rules:fallback'), error='context_or_model_unavailable')
-        proposals = []
-        if context and context.get('contacts', {}).get(context.get('contact_key')):
+        proposals, quiet = [], output.get('model', {}).get('actual_model') == 'rules:supplier_no_deal'
+        if quiet:
+            pass
+        elif context and context.get('contacts', {}).get(context.get('contact_key')):
             try:
                 proposals = self._plan(context, event, plan)
             except Exception:
                 output['planning_error'] = 'planning_failed'
-        if not proposals:
+        if not proposals and not quiet:
             proposals = [dict(kind='ask_owner', contact_key=event['conversation_key'], parts=[], fact_ids=[],
                               payload=dict(reason=missing or 'identity_context_or_plan_required'))]
         with self.store.write() as db:

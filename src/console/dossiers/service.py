@@ -1,6 +1,7 @@
 """Project dossier-v1's inspected sd_* schema. Amounts always remain strings."""
 import base64
 import json
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from .store import DB_PATH, readonly
@@ -17,6 +18,14 @@ def unpack(row):
             raw = result.pop(key)
             result[key[:-5]] = json.loads(raw) if raw is not None else None
     return result
+
+
+def gap_open(db, alias='sd_gap'):
+    prefix = alias + '.' if alias else ''
+    clause = prefix + "state='open'"
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sd_gap_fill'").fetchone():
+        clause += ' AND NOT EXISTS(SELECT 1 FROM sd_gap_fill gf WHERE gf.gap_id=' + prefix + 'gap_id)'
+    return clause
 
 
 def family_key(value):
@@ -63,7 +72,7 @@ class Dossiers:
                 s.update(family_count=stats[0], configuration_count=stats[1], priced_count=stats[2] or 0,
                          unpriced_count=stats[1] - (stats[2] or 0),
                          latest_quote=db.execute('SELECT MAX(quoted_on) FROM sd_offer WHERE supplier_id=?', (sid,)).fetchone()[0],
-                         gap_count=db.execute("SELECT count(*) FROM sd_gap WHERE supplier_id=? AND state='open'", (sid,)).fetchone()[0])
+                         gap_count=db.execute('SELECT count(*) FROM sd_gap g WHERE supplier_id=? AND ' + gap_open(db, 'g'), (sid,)).fetchone()[0])
                 s.pop('contacts', None)
                 rows.append(s)
             return dict(items=rows, total=len(rows))
@@ -87,7 +96,7 @@ class Dossiers:
             p['evidence'] = self._evidence(db, 'product', p['product_id'])
             p['suppliers'] = [unpack(r) for r in db.execute('SELECT sp.*,s.name FROM sd_supplier_product sp JOIN sd_supplier s USING(supplier_id) WHERE product_id=? ORDER BY s.name', (p['product_id'],))]
             p['offers'] = self._offers(db, 'o.product_id=?', (p['product_id'],))
-            p['gaps'] = [unpack(r) for r in db.execute("SELECT * FROM sd_gap WHERE product_id=? AND state='open' ORDER BY priority,gap_id", (p['product_id'],))]
+            p['gaps'] = [unpack(r) for r in db.execute('SELECT * FROM sd_gap g WHERE product_id=? AND ' + gap_open(db, 'g') + ' ORDER BY priority,gap_id', (p['product_id'],))]
             result.append(p)
         return result
 
@@ -151,7 +160,7 @@ class Dossiers:
 
     @staticmethod
     def _gaps(db, params):
-        clauses, args = ["g.state='open'"], []
+        clauses, args = [gap_open(db, 'g')], []
         for key, col in [('supplier', 'supplier_id'), ('priority', 'priority'), ('type', 'gap_type')]:
             if params.get(key):
                 clauses.append('g.' + col + '=?')
@@ -166,8 +175,26 @@ class Dossiers:
             page = int(params.get('page') or 1)
             size = int(params.get('page_size') or 30)
             return dict(items=rows[(page-1)*size:page*size], total=len(rows), page=page, page_size=size,
-                        types=[r[0] for r in db.execute("SELECT DISTINCT gap_type FROM sd_gap WHERE state='open' ORDER BY gap_type")],
-                        priorities=[r[0] for r in db.execute("SELECT DISTINCT priority FROM sd_gap WHERE state='open' ORDER BY priority")])
+                        types=[r[0] for r in db.execute('SELECT DISTINCT gap_type FROM sd_gap g WHERE ' + gap_open(db, 'g') + ' ORDER BY gap_type')],
+                        priorities=[r[0] for r in db.execute('SELECT DISTINCT priority FROM sd_gap g WHERE ' + gap_open(db, 'g') + ' ORDER BY priority')])
+
+    def updates(self):
+        """Read-only seven-day increment summary; no route or implicit migration."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec='seconds')
+        result = dict(days=7, ready=False, new_offers=0, filled_gaps=0,
+                      pending_reviews=0, last_run_at=None, failures=[])
+        with readonly(self.path) as db:
+            self.check(db)
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {'sd_projection', 'sd_gap_fill', 'sd_review', 'sd_run', 'sd_cursor', 'sd_job'} <= tables:
+                return result
+            result['ready'] = True
+            result['new_offers'] = db.execute("SELECT count(*) FROM sd_projection WHERE table_name='sd_offer' AND created_at>=?", (cutoff,)).fetchone()[0]
+            result['filled_gaps'] = db.execute('SELECT count(*) FROM sd_gap_fill WHERE filled_at>=?', (cutoff,)).fetchone()[0]
+            result['pending_reviews'] = db.execute("SELECT count(*) FROM sd_review WHERE state='open' AND created_at>=?", (cutoff,)).fetchone()[0]
+            result['last_run_at'] = db.execute('SELECT max(at) FROM (SELECT reconciled_at AS at FROM sd_cursor UNION ALL SELECT finished_at FROM sd_run UNION ALL SELECT finished_at FROM sd_job)').fetchone()[0]
+            result['failures'] = [dict(r) for r in db.execute("SELECT job_id,error_code,finished_at,not_before FROM sd_job WHERE state='failed' AND finished_at>=? ORDER BY finished_at DESC LIMIT 100", (cutoff,))]
+            return result
 
     def queue_card(self):
         value = self.gaps({'page_size': '5'})

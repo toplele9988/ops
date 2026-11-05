@@ -60,7 +60,7 @@ def test_model_entry_stdin_free_pool_and_metadata_only(monkeypatch):
     assert 'FICTIONAL INPUT' not in str(calls[0][0]) and 'FICTIONAL INPUT' in calls[0][1]['input']
     assert 'shell' not in calls[0][1] and result['model']['actual_model']=='qwen-fictional'
     model.decide({},difficult=True)
-    assert calls[-1][0][-1]=='deepseek-v4-pro-0813'
+    assert calls[-1][0][-1]=='auto'  # free pool only accepts auto
 
 
 @pytest.mark.parametrize('mode',['unknown','timeout','bad_json','refusal'])
@@ -79,3 +79,24 @@ def test_duplicate_field_rejected(system):
         response=client.post('/api/v1/operator/settings',headers={'X-Login':'yes','X-CSRF-Token':'fictional-csrf','Content-Type':'application/x-www-form-urlencoded'},
             content='scope=master&key=enabled&enabled=1&enabled=0&operation_key=duplicate-fields')
         assert response.status_code==400
+
+
+def test_gateway_runner_calls_gateway_directly_as_imgw(monkeypatch):
+    from console import ai_gateway
+    seen = []
+    monkeypatch.setattr(ai_gateway, '_is_imgw', lambda: True)
+    monkeypatch.setattr(ai_gateway.subprocess, 'run', lambda args, **kw: seen.append((args, kw)) or 'done')
+    assert ai_gateway.run(['ai-task', 'run', 'bailian_free', '--model', 'auto'], input='FICTIONAL', timeout=5) == 'done'
+    args, kw = seen[0]
+    assert args == [ai_gateway.GATEWAY]
+    assert json.loads(kw['input']) == dict(action='run', provider='bailian_free', model='auto', task='FICTIONAL')
+    monkeypatch.setattr(ai_gateway, '_is_imgw', lambda: False)
+    ai_gateway.run(['ai-task', 'run', 'bailian_free', '--model', 'auto'], input='FICTIONAL', timeout=5)
+    assert seen[1][0][0] == 'ai-task'
+
+
+def test_answer_in_code_block_is_parsed():
+    def run(args, **kw):
+        return SimpleNamespace(returncode=0, stdout=json.dumps(dict(status='ok', actual_model='qwen-fictional',
+            answer='```json\n{"intent":"routine","fact_ids":[]}\n```')))
+    assert AiTask(runner=run).decide({})['plan'] == dict(intent='routine', fact_ids=[])

@@ -14,23 +14,44 @@ REPO=Path(__file__).resolve().parents[2]
 BUNDLE=REPO/'deploy/dossiers'
 
 
+def reverse_file_patch(root, bundle, name, tmp):
+    lines=bundle.read_text().splitlines(True)
+    start=lines.index('--- a/'+name+'\n')
+    end=next((i for i in range(start+1,len(lines)) if lines[i].startswith('--- ')),len(lines))
+    patch=tmp/'baseline-reverse.patch';patch.write_text(''.join(lines[start:end]))
+    p=subprocess.run(['patch','--batch','--fuzz=0','-R','-p1','-i',str(patch)],cwd=root,capture_output=True)
+    assert p.returncode==0,p.stderr.decode()
+
+
+def baseline_files(root, kind, tmp):
+    """Remove independently installed packages in a disposable copy only.
+
+    Verify exact archived hashes after reconstruction; no acceptance criterion
+    depends on the production host still running the pre-M1 code.
+    """
+    want=dict(line.split('  ',1)[::-1] for line in (BUNDLE/(kind+'.baseline.sha256')).read_text().splitlines())
+    candidate=dict(line.split('  ',1)[::-1] for line in (BUNDLE/'production.candidate.sha256').read_text().splitlines())
+    for name in ('console/v3.py','console/ops_queue/service.py'):
+        shutil.copyfile(Path('/opt/imgw/wechat')/name,root/name)
+        target=root/name
+        if name=='console/v3.py' and 'from .operator import host as operator_host' in target.read_text():
+            reverse_file_patch(root, REPO/'deploy/operator/production.patch', name, tmp)
+        if hashlib.sha256(target.read_bytes()).hexdigest()==candidate[name]:
+            reverse_file_patch(root, BUNDLE/'production.patch', name, tmp)
+        if name=='console/ops_queue/service.py' and hashlib.sha256(target.read_bytes()).hexdigest()!=want[name]:
+            lines=(REPO/'deploy/wechat-private/production.patch').read_text().splitlines(True)
+            start=lines.index('--- a/'+name+'\n')
+            end=next((i for i in range(start+1,len(lines)) if lines[i].startswith('--- ')),len(lines))
+            patch=tmp/'companion.patch';patch.write_text(''.join(lines[start:end]))
+            p=subprocess.run(['patch','--batch','--fuzz=0',*(['-R'] if kind=='original' else []),'-p1','-i',str(patch)],cwd=root,capture_output=True)
+            assert p.returncode==0,p.stderr.decode()
+        assert hashlib.sha256(target.read_bytes()).hexdigest()==want[name]
+
+
 @pytest.mark.parametrize('kind',['original','production'])
 def test_install_replay_and_rollback(env,kind):
     root=env.root/'code';(root/'console/ops_queue').mkdir(parents=True)
-    for name in ('console/v3.py','console/ops_queue/service.py'):
-        shutil.copyfile(Path('/opt/imgw/wechat')/name,root/name)
-    # Reconstruct either exact companion baseline without depending on whether
-    # the independently managed private package has since been installed live.
-    queue=root/'console/ops_queue/service.py'
-    want=dict(line.split('  ',1)[::-1] for line in (BUNDLE/(kind+'.baseline.sha256')).read_text().splitlines())['console/ops_queue/service.py']
-    if hashlib.sha256(queue.read_bytes()).hexdigest()!=want:
-        lines=(REPO/'deploy/wechat-private/production.patch').read_text().splitlines(True)
-        start=lines.index('--- a/console/ops_queue/service.py\n')
-        end=next((i for i in range(start+1,len(lines)) if lines[i].startswith('--- a/')),len(lines))
-        patch=env.root/'companion.patch';patch.write_text(''.join(lines[start:end]))
-        p=subprocess.run(['patch','--batch','--fuzz=0',*(['-R'] if kind=='original' else []),'-p1','-i',str(patch)],cwd=root,capture_output=True)
-        assert p.returncode==0,p.stderr.decode()
-    assert hashlib.sha256(queue.read_bytes()).hexdigest()==want
+    baseline_files(root,kind,env.root)
     baseline={name:(root/name).read_bytes() for name in ('console/v3.py','console/ops_queue/service.py')}
     state=env.root/'state';backup=env.root/'backup'
     user=pwd.getpwuid(os.getuid()).pw_name
